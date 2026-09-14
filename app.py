@@ -40,19 +40,8 @@ def process_swfm_file(file_bytes):
         take_over = df.iloc[:, 35] # Kolom AJ (Take Over Date)
         check_in = df.iloc[:, 36]  # Kolom AK (Check In At)
         
-        # Logika spesifik SWFM: 
-        # Check In At (Kolom AK) -> Visit
-        # Hanya Take Over Date (Kolom AJ) & Check In At kosong -> Only Take Over
-        valid_mask = check_in.notna() | take_over.notna()
-        
-        def determine_status(ci, to):
-            if pd.notna(ci):
-                return 'Visit'
-            elif pd.notna(to):
-                return 'Only Take Over'
-            return 'Invalid'
-
-        statuses = [determine_status(ci, to) for ci, to in zip(check_in[valid_mask], take_over[valid_mask])]
+        # HANYA HITUNG JIKA KOLOM CHECK IN AT (KOLOM AK) TERISI / TIDAK KOSONG
+        valid_mask = check_in.notna()
         
         ticket_series = ticket[valid_mask].astype(str)
         source_series = ticket_series.apply(lambda x: 'BPS' if x.startswith('BPS') else ('TS' if x.startswith('TS') else 'TS'))
@@ -63,12 +52,11 @@ def process_swfm_file(file_bytes):
             'Site ID': site_id[valid_mask],
             'Site Name': site_name[valid_mask],
             'Nama PIC': pic[valid_mask],
-            'Status': statuses,
+            'Status': 'Visit',
             'Take Over Date': take_over[valid_mask],
             'Check In At': check_in[valid_mask],
-            'Tanggal Utama': check_in[valid_mask].fillna(take_over[valid_mask])
+            'Tanggal Utama': check_in[valid_mask]
         })
-        sub = sub[sub['Status'] != 'Invalid']
         return sub
     except Exception as e:
         st.error(f"Error pembacaan Ticket SWFM: {e}")
@@ -338,7 +326,6 @@ if not df_raw.empty:
         st.subheader("Generate Broadcast WhatsApp (Clean Format)")
         waktu_str = datetime.now().strftime("%d %b %Y - %H:%00 WIB")
         
-        # Daftar nama yang tidak masuk ke WA Broadcast
         excluded_names = ['darli susanto', 'indra', 'riko setiadi', 'riki hidayat']
         def is_excluded(name):
             return any(ex in str(name).lower() for ex in excluded_names)
