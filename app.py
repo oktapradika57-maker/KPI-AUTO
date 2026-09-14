@@ -5,7 +5,7 @@ from datetime import datetime
 import io
 import calendar
 
-st.set_page_config(page_title="Productivity & KPI Tracking", layout="wide")
+st.set_page_config(page_title="Productivity & KPI Tracker", layout="wide")
 
 # --- HELPER FUNCTIONS ---
 def calculate_ratio(total_tickets, target_days):
@@ -41,8 +41,13 @@ def process_swfm_file(file_bytes):
         check_in = df['Check In At'] if 'Check In At' in df.columns else df.iloc[:, 36]
         
         valid_mask = take_over.notna() | check_in.notna()
+        
+        # Pisahkan kategori BPS dan TS berdasarkan awalan nomor tiket
+        ticket_series = ticket[valid_mask].astype(str)
+        source_series = ticket_series.apply(lambda x: 'BPS' if x.startswith('BPS') else ('TS' if x.startswith('TS') else 'TS'))
+        
         sub = pd.DataFrame({
-            'Source': 'TS/BPS',
+            'Source': source_series,
             'Ticket ID': ticket[valid_mask],
             'Site ID': site_id[valid_mask],
             'Site Name': site_name[valid_mask],
@@ -205,43 +210,70 @@ if not df_raw.empty:
     end_date = pd.to_datetime(date_range[1]).replace(hour=23, minute=59, second=59)
     df_filtered_date = df_raw[(df_raw['Tanggal Utama'] >= start_date) & (df_raw['Tanggal Utama'] <= end_date)]
     
-    df_master = df_filtered_date.groupby('Nama PIC').size().reset_index(name='Tickets')
-    df_master['Daily_Tickets'] = 1 
-    
+    # Pivot table rincian per PIC berdasarkan Sumber (PMS, PMG, FNA, BPS, TS)
+    if not df_filtered_date.empty:
+        breakdown = pd.pivot_table(
+            df_filtered_date,
+            index='Nama PIC',
+            columns='Source',
+            values='Ticket ID',
+            aggfunc='count',
+            fill_value=0
+        ).reset_index()
+    else:
+        breakdown = pd.DataFrame(columns=['Nama PIC'])
+
+    # Pastikan kolom sumber utama selalu ada di dataframe
+    for col in ['PMS', 'PMG', 'FNA', 'BPS', 'TS']:
+        if col not in breakdown.columns:
+            breakdown[col] = 0
+
+    # Susun kolom dan hitung Total Tiket, Rasio, & Kategori
+    breakdown = breakdown[['Nama PIC', 'PMS', 'PMG', 'FNA', 'BPS', 'TS']]
+    breakdown['Total Tiket'] = breakdown[['PMS', 'PMG', 'FNA', 'BPS', 'TS']].sum(axis=1)
+    breakdown['Ratio'] = breakdown['Total Tiket'].apply(lambda x: calculate_ratio(x, target_days))
+    breakdown['Kategori Produktivitas'] = breakdown['Ratio'].apply(get_productivity_category)
+    breakdown['Sisa Target'] = breakdown['Total Tiket'].apply(lambda x: target_days - x if x < target_days else 0)
+
+    # Masukkan PIC yang sama sekali tidak punya tiket di rentang tanggal tersebut
     all_pics = df_raw['Nama PIC'].unique()
-    missing_pics = set(all_pics) - set(df_master['Nama PIC'].unique())
+    missing_pics = set(all_pics) - set(breakdown['Nama PIC'].unique())
     if missing_pics:
-        df_missing = pd.DataFrame({'Nama PIC': list(missing_pics), 'Tickets': 0, 'Daily_Tickets': 0})
-        df_master = pd.concat([df_master, df_missing], ignore_index=True)
+        df_missing = pd.DataFrame({'Nama PIC': list(missing_pics), 'PMS': 0, 'PMG': 0, 'FNA': 0, 'BPS': 0, 'TS': 0, 'Total Tiket': 0, 'Ratio': 0.0, 'Kategori Produktivitas': 'Zero', 'Sisa Target': target_days})
+        breakdown = pd.concat([breakdown, df_missing], ignore_index=True)
 
-    df_master['Ratio'] = df_master['Tickets'].apply(lambda x: calculate_ratio(x, target_days))
-    df_master['Status Harian'] = df_master['Daily_Tickets'].apply(get_daily_status)
-    df_master['Kategori Produktivitas'] = df_master['Ratio'].apply(get_productivity_category)
-    df_master['Sisa Target'] = df_master['Tickets'].apply(lambda x: target_days - x if x < target_days else 0)
-
+    df_master = breakdown.copy()
     if kategori_filter:
         df_master = df_master[df_master['Kategori Produktivitas'].isin(kategori_filter)]
 
-    # === TAB 1: DASHBOARD UTAMA ===
+    # === TAB 1: DASHBOARD UTAMA & RINCIAN PER PIC ===
     with tab1:
-        st.subheader(f"Performa Rentang Waktu (Target: {target_days} Hari)")
+        st.subheader(f"Rincian Perolehan Tiket per PIC (Target: {target_days} Hari)")
         col1, col2, col3 = st.columns(3)
         col1.metric("Total PIC Ditampilkan", len(df_master))
         col2.metric("Good Productivity", len(df_master[df_master['Kategori Produktivitas'] == 'Good']))
         col3.metric("Warning (Zero/Very Poor)", len(df_master[df_master['Kategori Produktivitas'].isin(['Zero', 'Very Poor'])]))
         
         st.markdown("---")
-        col_chart1, col_chart2 = st.columns([2,1])
+        
+        # Tampilkan Tabel Rincian Lengkap (PMS, PMG, FNA, BPS, TS, Total)
+        st.write("📋 **Tabel Rincian Jumlah Tiket Masing-Masing Kategori & Total:**")
+        st.dataframe(df_master[['Nama PIC', 'PMS', 'PMG', 'FNA', 'BPS', 'TS', 'Total Tiket', 'Ratio', 'Kategori Produktivitas']].style.format({'Ratio': "{:.2f}"}), use_container_width=True)
+        
+        st.markdown("---")
+        col_chart1, col_chart2 = st.columns(2)
         with col_chart1:
             if not df_master.empty:
-                fig_bar = px.bar(df_master.sort_values('Ratio', ascending=False), x='Nama PIC', y='Ratio', color='Kategori Produktivitas',
-                                 color_discrete_map={'Good': '#00CC96', 'Poor': '#FFA15A', 'Very Poor': '#EF553B', 'Zero': '#636EFA'},
-                                 title="Rasio Produktivitas per PIC")
-                fig_bar.add_hline(y=1.0, line_dash="dash", annotation_text="Target Rasio 1.0", line_color="red")
+                fig_bar = px.bar(df_master.sort_values('Total Tiket', ascending=False), x='Nama PIC', y=['PMS', 'PMG', 'FNA', 'BPS', 'TS'],
+                                 title="Komposisi Perolehan Tiket per PIC", labels={'value': 'Jumlah Tiket', 'variable': 'Kategori Source'})
                 st.plotly_chart(fig_bar, use_container_width=True)
-            
         with col_chart2:
-            st.dataframe(df_master[['Nama PIC', 'Tickets', 'Ratio', 'Kategori Produktivitas']].style.format({'Ratio': "{:.2f}"}), use_container_width=True)
+            if not df_master.empty:
+                fig_ratio = px.bar(df_master.sort_values('Ratio', ascending=False), x='Nama PIC', y='Ratio', color='Kategori Produktivitas',
+                                 color_discrete_map={'Good': '#00CC96', 'Poor': '#FFA15A', 'Very Poor': '#EF553B', 'Zero': '#636EFA'},
+                                 title="Rasio Produktivitas (Total Tiket / Target Hari)")
+                fig_ratio.add_hline(y=1.0, line_dash="dash", annotation_text="Target Rasio 1.0", line_color="red")
+                st.plotly_chart(fig_ratio, use_container_width=True)
 
     # === TAB 2: MATRIKS PERFORMA BULANAN ===
     with tab2:
@@ -261,7 +293,6 @@ if not df_raw.empty:
         
         if last_4_months:
             matrix_display = matrix_pivot[last_4_months].copy()
-            
             threshold_good = 3 if len(last_4_months) == 4 else (len(last_4_months) - 1 if len(last_4_months) > 1 else 1)
             
             def calculate_remark(row):
@@ -310,18 +341,18 @@ if not df_raw.empty:
             for index, row in need_attention.iterrows():
                 tag_name = f"@{row['Nama PIC'].replace(' ', '')}"
                 txt += f"▪️ {tag_name} - *{row['Kategori Produktivitas'].upper()}*\n"
-                txt += f"   Total Tiket: {row['Tickets']} | Rasio: {row['Ratio']:.2f}\n"
+                txt += f"   Total Tiket: {row['Total Tiket']} (PMS:{row['PMS']}, PMG:{row['PMG']}, FNA:{row['FNA']}, BPS:{row['BPS']}, TS:{row['TS']}) | Rasio: {row['Ratio']:.2f}\n"
                 txt += f"   *Butuh {row['Sisa Target']} tiket lagi* untuk rasio aman (1.0).\n\n"
                 
         st.text_area("Copy Teks Broadcast:", value=txt, height=400)
 
     # === TAB 4: RAW DATA & EXPORT ===
     with tab4:
-        st.subheader("🗄️ Master Database Gabungan (TS/BPS, PMS, PMG, FNA)")
-        st.write("Semua data berhasil digabungkan lengkap dengan informasi Site, Status, serta Tanggal Check-in/Take-over.")
+        st.subheader("🗄️ Master Database Gabungan (TS, BPS, PMS, PMG, FNA)")
+        st.write("Semua data berhasil digabungkan lengkap dengan rincian kategori sumber tiket.")
         
         col_f1, col_f2 = st.columns(2)
-        filter_source = col_f1.multiselect("Filter Sumber File", options=df_raw['Source'].unique(), default=df_raw['Source'].unique())
+        filter_source = col_f1.multiselect("Filter Sumber Kategori", options=df_raw['Source'].unique(), default=df_raw['Source'].unique())
         filter_nama = col_f2.text_input("Cari Nama PIC di Database")
         
         df_export = df_raw.copy()
@@ -336,6 +367,7 @@ if not df_raw.empty:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df_export.to_excel(writer, index=False, sheet_name='Master Raw Data')
+            df_master.to_excel(writer, index=False, sheet_name='Summary Per PIC')
             if 'matrix_display' in locals() and not matrix_display.empty:
                 matrix_display.reset_index().to_excel(writer, index=False, sheet_name='Matriks Bulanan')
             
