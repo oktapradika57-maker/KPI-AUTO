@@ -33,16 +33,16 @@ def process_swfm_file(file_bytes):
         df = pd.read_excel(io.BytesIO(file_bytes))
         if df.empty: return pd.DataFrame()
         
-        ticket = df['Ticket Number SWFM'] if 'Ticket Number SWFM' in df.columns else df.iloc[:, 1]
-        site_id = df['Site Id'] if 'Site Id' in df.columns else df.iloc[:, 4]
-        site_name = df['Site Name'] if 'Site Name' in df.columns else df.iloc[:, 5]
-        pic = df['PIC Take Over Ticket'] if 'PIC Take Over Ticket' in df.columns else df.iloc[:, 17]
-        take_over = df['Take Over Date'] if 'Take Over Date' in df.columns else df.iloc[:, 35]
-        check_in = df['Check In At'] if 'Check In At' in df.columns else df.iloc[:, 36]
+        ticket = df.iloc[:, 1]     # Ticket Number SWFM
+        site_id = df.iloc[:, 4]    # Site Id
+        site_name = df.iloc[:, 5]  # Site Name
+        pic = df.iloc[:, 17]       # PIC Take Over Ticket
+        take_over = df.iloc[:, 35] # Kolom AJ (Take Over Date)
+        check_in = df.iloc[:, 36]  # Kolom AK (Check In At)
         
-        # Logika spesifik Ticket SWFM:
-        # - Visit jika Check In At terisi (tidak kosong)
-        # - Only Take Over jika Take Over Date terisi dan Check In At kosong
+        # Logika spesifik SWFM: 
+        # Check In At (Kolom AK) -> Visit
+        # Hanya Take Over Date (Kolom AJ) & Check In At kosong -> Only Take Over
         valid_mask = check_in.notna() | take_over.notna()
         
         def determine_status(ci, to):
@@ -54,7 +54,6 @@ def process_swfm_file(file_bytes):
 
         statuses = [determine_status(ci, to) for ci, to in zip(check_in[valid_mask], take_over[valid_mask])]
         
-        # Pisahkan kategori BPS dan TS berdasarkan awalan nomor tiket
         ticket_series = ticket[valid_mask].astype(str)
         source_series = ticket_series.apply(lambda x: 'BPS' if x.startswith('BPS') else ('TS' if x.startswith('TS') else 'TS'))
         
@@ -214,7 +213,7 @@ else:
     df_raw = df_raw.dropna(subset=['Nama PIC'])
 
 # --- TABS LAYOUT ---
-tab1, tab2, tab3, tab4 = tab1, tab2, tab3, tab4 = st.tabs(["📈 Analisa Rentang Waktu", "📅 Matriks Performa Bulanan", "💬 WA Broadcast", "🗄️ Raw Data & Export"])
+tab1, tab2, tab3, tab4 = st.tabs(["📈 Analisa Rentang Waktu", "📅 Matriks Performa Bulanan", "💬 WA Broadcast", "🗄️ Raw Data & Export"])
 
 if not df_raw.empty:
     
@@ -283,9 +282,9 @@ if not df_raw.empty:
                 fig_ratio.add_hline(y=1.0, line_dash="dash", annotation_text="Target Rasio 1.0", line_color="red")
                 st.plotly_chart(fig_ratio, use_container_width=True)
 
-    # === TAB 2: MATRIKS PERFORMA BULANAN ===
+    # === TAB 2: MATRIKS PERFORMA BULANAN (FLEKSIBEL & MULTI-FILTER) ===
     with tab2:
-        st.subheader("Matriks Rasio Produktivitas Bulanan (4 Bulan Terakhir)")
+        st.subheader("Matriks Rasio Produktivitas Bulanan (Fleksibel)")
         
         df_matrix_raw = df_raw.dropna(subset=['Tanggal Utama']).copy()
         df_matrix_raw['Bulan_Sort'] = df_matrix_raw['Tanggal Utama'].dt.to_period('M')
@@ -297,11 +296,16 @@ if not df_raw.empty:
         matrix_pivot = monthly_tickets.pivot(index='Nama PIC', columns='Bulan_Sort', values='Ratio').fillna(0)
         
         available_months = sorted(matrix_pivot.columns)
-        last_4_months = available_months[-4:] if len(available_months) >= 4 else available_months
         
-        if last_4_months:
-            matrix_display = matrix_pivot[last_4_months].copy()
-            threshold_good = 3 if len(last_4_months) == 4 else (len(last_4_months) - 1 if len(last_4_months) > 1 else 1)
+        col_m1, col_m2 = st.columns(2)
+        selected_months = col_m1.multiselect("📅 Pilih Bulan yang Ingin Ditampilkan", options=available_months, default=available_months[-4:] if len(available_months)>=4 else available_months, format_func=lambda x: x.strftime('%B %Y'))
+        
+        all_matrix_pics = sorted(matrix_pivot.index.tolist())
+        selected_matrix_pics = col_m2.multiselect("🔍 Filter Nama PIC (Kosongkan = Tampil Semua)", options=all_matrix_pics, default=[])
+        
+        if selected_months:
+            matrix_display = matrix_pivot[selected_months].copy()
+            threshold_good = 3 if len(selected_months) == 4 else (len(selected_months) - 1 if len(selected_months) > 1 else 1)
             
             def calculate_remark(row):
                 good_months = sum(row >= 1.0)
@@ -309,9 +313,12 @@ if not df_raw.empty:
                 
             matrix_display['Remark'] = matrix_display.apply(calculate_remark, axis=1)
             
-            rename_cols = {col: col.strftime('%b-%y') for col in last_4_months}
+            rename_cols = {col: col.strftime('%b-%y') for col in selected_months}
             matrix_display = matrix_display.rename(columns=rename_cols)
             month_str_cols = list(rename_cols.values())
+
+            if selected_matrix_pics:
+                matrix_display = matrix_display[matrix_display.index.isin(selected_matrix_pics)]
 
             def style_matrix(val):
                 if isinstance(val, str):
@@ -322,36 +329,44 @@ if not df_raw.empty:
                 elif val >= 0.2: return 'background-color: #f0ad4e; color: white'
                 else: return 'background-color: #d9534f; color: white'
 
-            search_pic = st.text_input("🔍 Cari Nama PIC pada Matriks")
-            if search_pic:
-                matrix_display = matrix_display[matrix_display.index.str.contains(search_pic, case=False, na=False)]
-
             st.dataframe(matrix_display.style.map(style_matrix).format({col: "{:.2f}" for col in month_str_cols}), use_container_width=True, height=600)
         else:
-            st.info("Data tanggal belum mencukupi untuk membentuk matriks bulanan.")
+            st.info("Silakan pilih minimal 1 bulan pada filter di atas.")
 
-    # === TAB 3: WA BROADCAST ===
+    # === TAB 3: WA BROADCAST (FORMAT RAPI & EKSKLUSI NAMA TERTENTU) ===
     with tab3:
-        st.subheader("Generate Broadcast WhatsApp")
-        waktu = datetime.now().strftime("%H:%00 WIB")
+        st.subheader("Generate Broadcast WhatsApp (Clean Format)")
+        waktu_str = datetime.now().strftime("%d %b %Y - %H:%00 WIB")
+        
+        # Daftar nama yang tidak masuk ke WA Broadcast
+        excluded_names = ['darli susanto', 'indra', 'riko setiadi', 'riki hidayat']
+        def is_excluded(name):
+            return any(ex in str(name).lower() for ex in excluded_names)
+            
+        broadcast_df = df_master[~df_master['Nama PIC'].apply(is_excluded)]
         
         txt = f"📢 *UPDATE TICKETING PRODUCTIVITY* 📢\n"
-        txt += f"📅 Tanggal: {datetime.now().strftime('%d %b %Y')}\n"
-        txt += f"⏰ Waktu: {waktu}\n"
-        txt += f"🎯 Target Rentang Evaluasi: {target_days} Hari (Rasio 1.0)\n\n"
+        txt += f"📅 Periode: {date_range[0].strftime('%d %b %Y')} s/d {date_range[1].strftime('%d %b %Y')}\n"
+        txt += f"⏰ Waktu Report: {waktu_str}\n"
+        txt += f"🎯 Target Hari: *{target_days} Hari* (Rasio Standar: >= 1.0)\n"
+        txt += "──────────────────────────\n\n"
         
-        need_attention = df_master[df_master['Kategori Produktivitas'].isin(['Zero', 'Very Poor', 'Poor'])].sort_values('Ratio')
+        need_attention = broadcast_df[broadcast_df['Kategori Produktivitas'].isin(['Zero', 'Very Poor', 'Poor'])].sort_values('Ratio')
         
         if need_attention.empty:
-            txt += "✅ *Luar biasa! Semua tim berada di rasio Good (Rasio >= 1.0).* Pertahankan!\n"
+            txt += "✅ *Luar biasa! Seluruh personel berada di kategori Good (Rasio >= 1.0).* Pertahankan kinerjanya! 💪\n"
         else:
-            txt += "🚨 *PERLU PERHATIAN KHUSUS (Status: Not Safe / Warning)* 🚨\nHarap selesaikan tiket untuk memperbaiki rasio produktivitas:\n\n"
+            txt += "🚨 *DAFTAR PERHATIAN KHUSUS (Status: Not Safe / Warning)* 🚨\n"
+            txt += "Harap segera ambil dan selesaikan tiket untuk mendongkrak rasio harian:\n\n"
             for index, row in need_attention.iterrows():
                 tag_name = f"@{row['Nama PIC'].replace(' ', '')}"
-                txt += f"▪️ {tag_name} - *{row['Kategori Produktivitas'].upper()}*\n"
-                txt += f"   Total Tiket: {row['Total Tiket']} (PMS:{row['PMS']}, PMG:{row['PMG']}, FNA:{row['FNA']}, BPS:{row['BPS']}, TS:{row['TS']}) | Rasio: {row['Ratio']:.2f}\n"
-                txt += f"   *Butuh {row['Sisa Target']} tiket lagi* untuk rasio aman (1.0).\n\n"
+                txt += f"▪️ {tag_name} — *{row['Kategori Produktivitas'].upper()}*\n"
+                txt += f"   • Total Tiket: *{row['Total Tiket']}* (PMS:{row['PMS']} | PMG:{row['PMG']} | FNA:{row['FNA']} | BPS:{row['BPS']} | TS:{row['TS']})\n"
+                txt += f"   • Rasio: *{row['Ratio']:.2f}* | Kurang: *{int(row['Sisa Target'])}* tiket lagi\n\n"
                 
+        txt += "──────────────────────────\n"
+        txt += "Terimakasih atas kerja keras & dedikasinya rekan-rekan. Tetap semangat! 🚀"
+        
         st.text_area("Copy Teks Broadcast:", value=txt, height=400)
 
     # === TAB 4: RAW DATA & EXPORT ===
