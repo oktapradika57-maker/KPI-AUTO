@@ -28,67 +28,79 @@ def get_productivity_category(ratio):
     else:
         return "Zero"
 
-# --- MOCK DATA PROCESSORS (Sesuaikan dengan struktur kolom Excel asli) ---
-def process_bps_ts(df):
-    # Logika: Hitung visit berdasarkan Check-In. Jika tidak ada, hitung sebagai Take Over.
-    # Asumsi kolom: 'Nama PIC', 'Check_In_Date', 'Take_Over_Status'
+# --- DATA PROCESSORS ---
+def process_ticketing_bps_ts(df):
+    # Logika untuk file pertama: BPS & TS (Kalkulasi dari Check-In atau Take Over)
     if df is not None:
-        valid_tickets = df[df['Check_In_Date'].notna() | (df['Take_Over_Status'] == 'Yes')]
-        return valid_tickets.groupby('Nama PIC').size().reset_index(name='Tickets')
-    return pd.DataFrame(columns=['Nama PIC', 'Tickets'])
-
-def process_pna(df):
-    # Logika: Valid jika status = 'Close'
-    if df is not None:
-        valid_tickets = df[df['Status'].str.lower() == 'close']
-        return valid_tickets.groupby('Nama PIC').size().reset_index(name='Tickets')
+        # Pengecekan kolom disesuaikan dengan header Excel lapangan
+        if 'Check_In_Date' in df.columns and 'Take_Over_Status' in df.columns:
+            valid_tickets = df[df['Check_In_Date'].notna() | (df['Take_Over_Status'].astype(str).str.lower() == 'yes')]
+            return valid_tickets.groupby('Nama PIC').size().reset_index(name='Tickets')
+        else:
+            return df.groupby('Nama PIC').size().reset_index(name='Tickets')
     return pd.DataFrame(columns=['Nama PIC', 'Tickets'])
 
 def process_pms_pmg(df):
-    # Logika: Valid jika status = 'Submit'
+    # Logika untuk file PMS dan PMG (Kalkulasi dari status Submit)
     if df is not None:
-        valid_tickets = df[df['Status'].str.lower() == 'submit']
-        return valid_tickets.groupby('Nama PIC').size().reset_index(name='Tickets')
+        if 'Status' in df.columns:
+            valid_tickets = df[df['Status'].astype(str).str.lower() == 'submit']
+            return valid_tickets.groupby('Nama PIC').size().reset_index(name='Tickets')
+        else:
+            return df.groupby('Nama PIC').size().reset_index(name='Tickets')
     return pd.DataFrame(columns=['Nama PIC', 'Tickets'])
 
-def process_ticketing(df):
-    # Logika general tiket reguler
+def process_pna(df):
+    # Logika untuk file PNA (Kalkulasi dari status Close)
     if df is not None:
-        return df.groupby('Nama PIC').size().reset_index(name='Tickets')
+        if 'Status' in df.columns:
+            valid_tickets = df[df['Status'].astype(str).str.lower() == 'close']
+            return valid_tickets.groupby('Nama PIC').size().reset_index(name='Tickets')
+        else:
+            return df.groupby('Nama PIC').size().reset_index(name='Tickets')
     return pd.DataFrame(columns=['Nama PIC', 'Tickets'])
 
 # --- UI DASHBOARD ---
 st.title("📊 Productivity Ticketing Dashboard")
 
 with st.sidebar:
-    st.header("📂 Upload File Data")
-    file_ticketing = st.file_uploader("Upload File Ticketing", type=['xlsx', 'csv'])
-    file_pms = st.file_uploader("Upload File PMS & PMG", type=['xlsx', 'csv'])
-    file_pna = st.file_uploader("Upload File PNA", type=['xlsx', 'csv'])
-    file_bps = st.file_uploader("Upload File BPS & TS", type=['xlsx', 'csv'])
+    st.header("📂 Upload 4 File Data")
     
+    # Perubahan struktur 4 file uploader
+    file_ticketing = st.file_uploader("1. Upload File Ticketing (BPS & TS)", type=['xlsx', 'csv'])
+    file_pms = st.file_uploader("2. Upload File PMS", type=['xlsx', 'csv'])
+    file_pmg = st.file_uploader("3. Upload File PMG", type=['xlsx', 'csv'])
+    file_pna = st.file_uploader("4. Upload File PNA", type=['xlsx', 'csv'])
+    
+    st.markdown("---")
     current_day = st.number_input("Tanggal Berjalan (Target Tiket)", min_value=1, max_value=31, value=datetime.now().day)
 
-# --- SIMULASI PROSES DATA (Dummy data digunakan jika tidak ada file diupload) ---
-# Untuk implementasi nyata, ganti dummy data ini dengan fungsi pd.read_excel(file_...)
+# --- PROSES PENGGABUNGAN DATA ---
 data_list = []
-if file_ticketing: data_list.append(process_ticketing(pd.read_excel(file_ticketing)))
-if file_pms: data_list.append(process_pms_pmg(pd.read_excel(file_pms)))
-if file_pna: data_list.append(process_pna(pd.read_excel(file_pna)))
-if file_bps: data_list.append(process_bps_ts(pd.read_excel(file_bps)))
 
-# Data dummy untuk visualisasi awal jika belum ada upload
+# Membaca masing-masing uploader dan memasukkannya ke kalkulasi utama
+if file_ticketing: 
+    data_list.append(process_ticketing_bps_ts(pd.read_excel(file_ticketing)))
+if file_pms: 
+    data_list.append(process_pms_pmg(pd.read_excel(file_pms)))
+if file_pmg: 
+    data_list.append(process_pms_pmg(pd.read_excel(file_pmg)))
+if file_pna: 
+    data_list.append(process_pna(pd.read_excel(file_pna)))
+
+# Data dummy untuk visualisasi jika belum ada file yang diunggah
 if not data_list:
-    dummy_data = pd.DataFrame({
+    st.info("Silakan upload minimal 1 file Excel dari menu di samping kiri untuk melihat data sebenarnya.")
+    df_master = pd.DataFrame({
         'Nama PIC': ['Andi', 'Budi', 'Citra', 'Deni', 'Eka'],
         'Tickets': [14, 7, 2, 0, 20],
-        'Daily_Tickets': [2, 1, 0, 0, 3] # Tiket yang dikerjakan khusus hari ini
+        'Daily_Tickets': [2, 1, 0, 0, 3] 
     })
-    df_master = dummy_data
 else:
+    # Menggabungkan semua tiket dari 4 file berdasarkan Nama PIC
     df_master = pd.concat(data_list).groupby('Nama PIC')['Tickets'].sum().reset_index()
-    # Asumsi kolom Daily_Tickets diekstrak dari filter tanggal hari ini pada file master
-    df_master['Daily_Tickets'] = 1 # Placeholder, sesuaikan dengan ekstraksi tanggal harian di Excel
+    # Asumsi sementara tiket harian di-set 1 (bisa disesuaikan logic filter tanggalnya nanti)
+    df_master['Daily_Tickets'] = 1 
 
 # --- KALKULASI METRIK ---
 df_master['Ratio'] = df_master['Tickets'].apply(lambda x: calculate_ratio(x, current_day))
@@ -124,12 +136,11 @@ with tab1:
 
 with tab2:
     st.subheader("Data Perhitungan Produktivitas")
-    # Format desimal agar rasio terlihat rapi
     df_display = df_master.style.format({'Ratio': "{:.2f}"})
     st.dataframe(df_display, use_container_width=True)
 
 with tab3:
-    st.subheader("Generate Broadcast WhatsApp (Update per 3 Jam)")
+    st.subheader("Generate Broadcast WhatsApp")
     
     def generate_broadcast(df, current_day):
         waktu = datetime.now().strftime("%H:%00 WIB")
@@ -159,6 +170,3 @@ with tab3:
 
     broadcast_text = generate_broadcast(df_master, current_day)
     st.text_area("Copy Teks di Bawah Ini ke Grup WA:", value=broadcast_text, height=400)
-    
-    if st.button("Regenerate Broadcast Data"):
-        st.rerun()
