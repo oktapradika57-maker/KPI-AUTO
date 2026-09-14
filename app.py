@@ -26,7 +26,7 @@ def get_productivity_category(ratio):
     elif 0 < ratio < 0.2: return "Very Poor"
     else: return "Zero"
 
-# --- CACHED PROCESSORS UNTUK MASING-MASING FILE ---
+# --- CACHED PROCESSORS ---
 @st.cache_data(show_spinner=False)
 def process_swfm_file(file_bytes):
     try:
@@ -40,7 +40,19 @@ def process_swfm_file(file_bytes):
         take_over = df['Take Over Date'] if 'Take Over Date' in df.columns else df.iloc[:, 35]
         check_in = df['Check In At'] if 'Check In At' in df.columns else df.iloc[:, 36]
         
-        valid_mask = take_over.notna() | check_in.notna()
+        # Logika validasi spesifik Ticket SWFM:
+        # Sah jika terisi di Check In At (Visit) ATAU terisi di Take Over Date (Only Take Over)
+        valid_mask = check_in.notna() | take_over.notna()
+        
+        # Tentukan status validasi berdasarkan Check In At vs Take Over Date
+        def determine_status(ci, to):
+            if pd.notna(ci):
+                return 'Visit'
+            elif pd.notna(to):
+                return 'Only Take Over'
+            return 'Invalid'
+
+        statuses = [determine_status(ci, to) for ci, to in zip(check_in[valid_mask], take_over[valid_mask])]
         
         # Pisahkan kategori BPS dan TS berdasarkan awalan nomor tiket
         ticket_series = ticket[valid_mask].astype(str)
@@ -52,11 +64,13 @@ def process_swfm_file(file_bytes):
             'Site ID': site_id[valid_mask],
             'Site Name': site_name[valid_mask],
             'Nama PIC': pic[valid_mask],
-            'Status': 'Visit / Take Over',
+            'Status': statuses,
             'Take Over Date': take_over[valid_mask],
             'Check In At': check_in[valid_mask],
-            'Tanggal Utama': take_over[valid_mask].fillna(check_in[valid_mask])
+            'Tanggal Utama': check_in[valid_mask].fillna(take_over[valid_mask])
         })
+        # Hanya ambil yang statusnya valid (Visit atau Only Take Over)
+        sub = sub[sub['Status'] != 'Invalid']
         return sub
     except Exception as e:
         st.error(f"Error pembacaan Ticket SWFM: {e}")
@@ -210,7 +224,6 @@ if not df_raw.empty:
     end_date = pd.to_datetime(date_range[1]).replace(hour=23, minute=59, second=59)
     df_filtered_date = df_raw[(df_raw['Tanggal Utama'] >= start_date) & (df_raw['Tanggal Utama'] <= end_date)]
     
-    # Pivot table rincian per PIC berdasarkan Sumber (PMS, PMG, FNA, BPS, TS)
     if not df_filtered_date.empty:
         breakdown = pd.pivot_table(
             df_filtered_date,
@@ -223,19 +236,16 @@ if not df_raw.empty:
     else:
         breakdown = pd.DataFrame(columns=['Nama PIC'])
 
-    # Pastikan kolom sumber utama selalu ada di dataframe
     for col in ['PMS', 'PMG', 'FNA', 'BPS', 'TS']:
         if col not in breakdown.columns:
             breakdown[col] = 0
 
-    # Susun kolom dan hitung Total Tiket, Rasio, & Kategori
     breakdown = breakdown[['Nama PIC', 'PMS', 'PMG', 'FNA', 'BPS', 'TS']]
     breakdown['Total Tiket'] = breakdown[['PMS', 'PMG', 'FNA', 'BPS', 'TS']].sum(axis=1)
     breakdown['Ratio'] = breakdown['Total Tiket'].apply(lambda x: calculate_ratio(x, target_days))
     breakdown['Kategori Produktivitas'] = breakdown['Ratio'].apply(get_productivity_category)
     breakdown['Sisa Target'] = breakdown['Total Tiket'].apply(lambda x: target_days - x if x < target_days else 0)
 
-    # Masukkan PIC yang sama sekali tidak punya tiket di rentang tanggal tersebut
     all_pics = df_raw['Nama PIC'].unique()
     missing_pics = set(all_pics) - set(breakdown['Nama PIC'].unique())
     if missing_pics:
@@ -256,7 +266,6 @@ if not df_raw.empty:
         
         st.markdown("---")
         
-        # Tampilkan Tabel Rincian Lengkap (PMS, PMG, FNA, BPS, TS, Total)
         st.write("📋 **Tabel Rincian Jumlah Tiket Masing-Masing Kategori & Total:**")
         st.dataframe(df_master[['Nama PIC', 'PMS', 'PMG', 'FNA', 'BPS', 'TS', 'Total Tiket', 'Ratio', 'Kategori Produktivitas']].style.format({'Ratio': "{:.2f}"}), use_container_width=True)
         
