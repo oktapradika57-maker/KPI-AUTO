@@ -239,7 +239,7 @@ if not df_raw.empty:
         if search_pic:
             matrix_display = matrix_display[matrix_display.index.str.contains(search_pic, case=False, na=False)]
 
-        st.dataframe(matrix_display.style.applymap(style_matrix).format({col: "{:.2f}" for col in month_str_cols}), use_container_width=True, height=600)
+        st.dataframe(matrix_display.style.map(style_matrix).format({col: "{:.2f}" for col in month_str_cols}), use_container_width=True, height=600)
 
     # === TAB 3: WA BROADCAST ===
     with tab3:
