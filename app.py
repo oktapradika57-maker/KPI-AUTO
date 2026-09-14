@@ -20,17 +20,24 @@ def extract_site_info(df):
             site_name = df[col]
     return site_id, site_name
 
-# --- DATA PROCESSOR BERDASARKAN NAMA FILE ---
-def process_uploaded_file(file):
-    filename = file.name.lower()
+# --- FUNGSI CACHE: DATA PROCESSOR BERDASARKAN NAMA FILE ---
+# Fitur cache ini membuat file Excel hanya dibaca 1x saja, mempercepat aplikasi
+@st.cache_data(show_spinner=False)
+def process_uploaded_file_cached(filename, file_bytes):
     try:
-        df = pd.read_excel(file)
+        # Membaca seluruh sheet untuk memastikan agregasi data metrik selesai dari tab utama (List) maupun cadangan (Backup)
+        sheet_dict = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None)
+        target_sheets = [name for name in sheet_dict.keys() if name.lower() in ['list', 'backup']]
+        
+        if target_sheets:
+            df = pd.concat([sheet_dict[name] for name in target_sheets], ignore_index=True)
+        else:
+            df = list(sheet_dict.values())[0] # Fallback ke sheet pertama jika tidak ada tab khusus
+            
     except Exception as e:
-        st.error(f"Gagal membaca file {file.name}: {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(), f"Gagal membaca file {filename}: {e}"
 
-    # Pastikan jumlah kolom mencukupi sebelum memproses index (A=0, B=1, C=2... AH=33)
-    if df.empty: return pd.DataFrame()
+    if df.empty: return pd.DataFrame(), ""
     
     site_id, site_name = extract_site_info(df)
     result_df = pd.DataFrame()
@@ -38,13 +45,13 @@ def process_uploaded_file(file):
     # 1. TICKET SWFM (BPS/TS)
     if filename.startswith("ticket_swfm"):
         if df.shape[1] > 13:
-            ticket = df.iloc[:, 2]  # C
-            nama = df.iloc[:, 11]   # L
-            tanggal = df.iloc[:, 12] # M
-            checkin = df.iloc[:, 13] # N
-            takeover = df.iloc[:, 12] # M (Take Over Date)
+            ticket = df.iloc[:, 2]  # Kolom C (Index 2)
+            nama = df.iloc[:, 11]   # Kolom L (Index 11)
+            tanggal = df.iloc[:, 12] # Kolom M (Index 12)
+            checkin = df.iloc[:, 13] # Kolom N (Index 13)
+            takeover = df.iloc[:, 12] # Kolom M (Take Over Date)
             
-            # Validasi: Jika M atau N terisi, hitung sebagai tiket
+            # Validasi: Jika M atau N terisi, hitung sebagai tiket (Visit/Take Over)
             valid_mask = checkin.notna() | takeover.notna()
             
             result_df = pd.DataFrame({
@@ -60,10 +67,10 @@ def process_uploaded_file(file):
     # 2. PM SITE (PMS)
     elif filename.startswith("pm site"):
         if df.shape[1] > 15:
-            ticket = df.iloc[:, 4]   # E
-            status = df.iloc[:, 13]  # N
-            tanggal = df.iloc[:, 14] # O
-            nama = df.iloc[:, 15]    # P
+            ticket = df.iloc[:, 4]   # Kolom E (Index 4)
+            status = df.iloc[:, 13]  # Kolom N (Index 13)
+            tanggal = df.iloc[:, 14] # Kolom O (Index 14)
+            nama = df.iloc[:, 15]    # Kolom P (Index 15)
             
             valid_status = ['waiting approval amesty', 'submitted', 'closed']
             valid_mask = status.astype(str).str.lower().isin(valid_status)
@@ -81,10 +88,10 @@ def process_uploaded_file(file):
     # 3. PM GENSET (PMG)
     elif filename.startswith("pm genset"):
         if df.shape[1] > 16:
-            ticket = df.iloc[:, 4]   # E
-            status = df.iloc[:, 14]  # O
-            tanggal = df.iloc[:, 15] # P
-            nama = df.iloc[:, 16]    # Q
+            ticket = df.iloc[:, 4]   # Kolom E (Index 4)
+            status = df.iloc[:, 14]  # Kolom O (Index 14)
+            tanggal = df.iloc[:, 15] # Kolom P (Index 15)
+            nama = df.iloc[:, 16]    # Kolom Q (Index 16)
             
             valid_status = ['waiting approval amesty', 'submitted', 'closed']
             valid_mask = status.astype(str).str.lower().isin(valid_status)
@@ -102,10 +109,10 @@ def process_uploaded_file(file):
     # 4. EXPORT LIST TICKET FIELD OPERATION (PNA)
     elif filename.startswith("export list ticket"):
         if df.shape[1] > 33:
-            ticket = df.iloc[:, 2]   # Asumsi C untuk Ticket ID (karena tidak disebutkan)
-            tanggal = df.iloc[:, 26] # AA
-            nama = df.iloc[:, 27]    # AB
-            status = df.iloc[:, 33]  # AH
+            ticket = df.iloc[:, 2]   # Asumsi Kolom C untuk Ticket ID
+            tanggal = df.iloc[:, 26] # Kolom AA (Index 26)
+            nama = df.iloc[:, 27]    # Kolom AB (Index 27)
+            status = df.iloc[:, 33]  # Kolom AH (Index 33)
             
             valid_mask = status.astype(str).str.lower() == 'closed'
             
@@ -119,7 +126,7 @@ def process_uploaded_file(file):
                 'Site Name': site_name[valid_mask] if isinstance(site_name, pd.Series) else site_name
             })
             
-    return result_df
+    return result_df, ""
 
 # --- UI DASHBOARD ---
 st.title("📊 Master KPI & Productivity Tracker")
@@ -138,11 +145,17 @@ master_data = pd.DataFrame()
 
 if uploaded_files:
     dataframes = []
-    for f in uploaded_files:
-        processed_df = process_uploaded_file(f)
-        if not processed_df.empty:
-            dataframes.append(processed_df)
-    
+    with st.spinner("⏳ Memproses & merangkum data... (Hanya butuh waktu di awal)"):
+        for f in uploaded_files:
+            # Mengambil bytes agar file aman dimasukkan ke dalam memory cache Streamlit
+            file_bytes = f.getvalue() 
+            processed_df, error_msg = process_uploaded_file_cached(f.name.lower(), file_bytes)
+            
+            if error_msg:
+                st.error(error_msg)
+            elif not processed_df.empty:
+                dataframes.append(processed_df)
+        
     if dataframes:
         master_data = pd.concat(dataframes, ignore_index=True)
         # Cleansing format tanggal
@@ -227,7 +240,7 @@ else:
 
     with tab3:
         st.subheader("Master Data Rangkuman")
-        st.write("Semua data yang berhasil difilter dan divalidasi dari 4 file yang di-upload.")
+        st.write("Semua data yang berhasil difilter dan divalidasi dari ke-4 file yang di-upload.")
         st.dataframe(master_data, use_container_width=True)
         
         # EXPORT TO EXCEL
@@ -262,6 +275,6 @@ else:
                 sisa = sisa if sisa > 0 else 0
                 txt += f"▪️ @{row['Nama PIC'].replace(' ', '')} - {row['Kategori Harian'].upper()}\n"
                 txt += f"   Total Tiket: {row['Total Tiket Bulan Ini']} | Rasio: {row['Rasio Harian']:.2f}\n"
-                txt += f"   Butuh: {sisa} tiket lagi.\n\n"
+                txt += f"   Butuh: {int(sisa)} tiket lagi.\n\n"
                 
         st.text_area("Copy Teks Broadcast:", value=txt, height=350)
