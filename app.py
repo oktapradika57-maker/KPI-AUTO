@@ -199,6 +199,10 @@ else:
     df_raw = pd.concat(raw_data_list, ignore_index=True)
     df_raw['Tanggal Utama'] = pd.to_datetime(df_raw['Tanggal Utama'], errors='coerce')
     df_raw = df_raw.dropna(subset=['Nama PIC'])
+    
+    # FILTER EXCLUDE NAMA TERTENTU DARI ALL DATA
+    excluded_from_all = ['okta pradika', 'harminto', 'armadi', 'muhamad rayhan']
+    df_raw = df_raw[~df_raw['Nama PIC'].astype(str).str.lower().apply(lambda x: any(ex in x for ex in excluded_from_all))]
 
 # --- TABS LAYOUT ---
 tab1, tab2, tab3, tab4 = st.tabs(["📈 Analisa Rentang Waktu", "📅 Matriks Performa Bulanan", "💬 WA Broadcast", "🗄️ Raw Data & Export"])
@@ -321,12 +325,12 @@ if not df_raw.empty:
         else:
             st.info("Silakan pilih minimal 1 bulan pada filter di atas.")
 
-    # === TAB 3: WA BROADCAST (FORMAT RAPI & EKSKLUSI NAMA TERTENTU) ===
+    # === TAB 3: WA BROADCAST (FORMAT RAPI & EKSKLUSI DARLI, INDRA, DLL) ===
     with tab3:
         st.subheader("Generate Broadcast WhatsApp (Clean Format)")
         waktu_str = datetime.now().strftime("%d %b %Y - %H:%00 WIB")
         
-        excluded_names = ['darli susanto', 'indra', 'riko setiadi', 'riki hidayat']
+        excluded_names = ['darli', 'indra', 'riko setiadi', 'riki hidayat']
         def is_excluded(name):
             return any(ex in str(name).lower() for ex in excluded_names)
             
