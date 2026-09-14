@@ -40,11 +40,11 @@ def process_swfm_file(file_bytes):
         take_over = df['Take Over Date'] if 'Take Over Date' in df.columns else df.iloc[:, 35]
         check_in = df['Check In At'] if 'Check In At' in df.columns else df.iloc[:, 36]
         
-        # Logika validasi spesifik Ticket SWFM:
-        # Sah jika terisi di Check In At (Visit) ATAU terisi di Take Over Date (Only Take Over)
+        # Logika spesifik Ticket SWFM:
+        # - Visit jika Check In At terisi (tidak kosong)
+        # - Only Take Over jika Take Over Date terisi dan Check In At kosong
         valid_mask = check_in.notna() | take_over.notna()
         
-        # Tentukan status validasi berdasarkan Check In At vs Take Over Date
         def determine_status(ci, to):
             if pd.notna(ci):
                 return 'Visit'
@@ -69,7 +69,6 @@ def process_swfm_file(file_bytes):
             'Check In At': check_in[valid_mask],
             'Tanggal Utama': check_in[valid_mask].fillna(take_over[valid_mask])
         })
-        # Hanya ambil yang statusnya valid (Visit atau Only Take Over)
         sub = sub[sub['Status'] != 'Invalid']
         return sub
     except Exception as e:
@@ -215,7 +214,7 @@ else:
     df_raw = df_raw.dropna(subset=['Nama PIC'])
 
 # --- TABS LAYOUT ---
-tab1, tab2, tab3, tab4 = st.tabs(["📈 Analisa Rentang Waktu", "📅 Matriks Performa Bulanan", "💬 WA Broadcast", "🗄️ Raw Data & Export"])
+tab1, tab2, tab3, tab4 = tab1, tab2, tab3, tab4 = st.tabs(["📈 Analisa Rentang Waktu", "📅 Matriks Performa Bulanan", "💬 WA Broadcast", "🗄️ Raw Data & Export"])
 
 if not df_raw.empty:
     
