@@ -28,11 +28,41 @@ def get_productivity_category(ratio):
     else:
         return "Zero"
 
+# --- LOGIKA AUTO-DETECT KOLOM NAMA ---
+def auto_detect_pic_column(df):
+    if df is None or df.empty:
+        return None
+        
+    # 1. Prioritas utama: Cari dari nama header (tidak sensitif huruf besar/kecil)
+    keywords = ['nama', 'pic', 'teknisi', 'petugas', 'engineer', 'pelaksana', 'resource', 'assignee']
+    for col in df.columns:
+        if any(kw in str(col).lower() for kw in keywords):
+            return col
+            
+    # 2. Alternatif: Cari berdasarkan isi baris data (tipe Teks dengan panjang mirip nama orang)
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            # Ambil sampel data yang tidak kosong
+            sample = df[col].dropna().astype(str)
+            if not sample.empty:
+                avg_len = sample.apply(len).mean()
+                # Jika rata-rata panjang karakternya 3 - 30, asumsikan ini kolom nama
+                if 3 <= avg_len <= 30:
+                    return col
+    return None
+
 # --- DATA PROCESSORS ---
-def process_ticketing_bps_ts(df):
-    # Logika untuk file pertama: BPS & TS (Kalkulasi dari Check-In atau Take Over)
-    if df is not None:
-        # Pengecekan kolom disesuaikan dengan header Excel lapangan
+def process_ticketing_bps_ts(df, source_name):
+    if df is not None and not df.empty:
+        name_col = auto_detect_pic_column(df)
+        if not name_col:
+            st.warning(f"⚠️ Tidak dapat mendeteksi kolom nama di file {source_name}.")
+            return pd.DataFrame(columns=['Nama PIC', 'Tickets'])
+            
+        # Standarisasi nama kolom secara internal
+        df = df.rename(columns={name_col: 'Nama PIC'})
+        
+        # Logika validasi BPS & TS
         if 'Check_In_Date' in df.columns and 'Take_Over_Status' in df.columns:
             valid_tickets = df[df['Check_In_Date'].notna() | (df['Take_Over_Status'].astype(str).str.lower() == 'yes')]
             return valid_tickets.groupby('Nama PIC').size().reset_index(name='Tickets')
@@ -40,23 +70,23 @@ def process_ticketing_bps_ts(df):
             return df.groupby('Nama PIC').size().reset_index(name='Tickets')
     return pd.DataFrame(columns=['Nama PIC', 'Tickets'])
 
-def process_pms_pmg(df):
-    # Logika untuk file PMS dan PMG (Kalkulasi dari status Submit)
-    if df is not None:
-        if 'Status' in df.columns:
-            valid_tickets = df[df['Status'].astype(str).str.lower() == 'submit']
+def process_general_status(df, source_name, target_status):
+    if df is not None and not df.empty:
+        name_col = auto_detect_pic_column(df)
+        if not name_col:
+            st.warning(f"⚠️ Tidak dapat mendeteksi kolom nama di file {source_name}.")
+            return pd.DataFrame(columns=['Nama PIC', 'Tickets'])
+            
+        df = df.rename(columns={name_col: 'Nama PIC'})
+        
+        # Cari kolom status (Cari yang mengandung kata 'status')
+        status_col = next((col for col in df.columns if 'status' in str(col).lower()), None)
+        
+        if status_col:
+            valid_tickets = df[df[status_col].astype(str).str.lower() == target_status.lower()]
             return valid_tickets.groupby('Nama PIC').size().reset_index(name='Tickets')
         else:
-            return df.groupby('Nama PIC').size().reset_index(name='Tickets')
-    return pd.DataFrame(columns=['Nama PIC', 'Tickets'])
-
-def process_pna(df):
-    # Logika untuk file PNA (Kalkulasi dari status Close)
-    if df is not None:
-        if 'Status' in df.columns:
-            valid_tickets = df[df['Status'].astype(str).str.lower() == 'close']
-            return valid_tickets.groupby('Nama PIC').size().reset_index(name='Tickets')
-        else:
+            # Jika tidak ada kolom status, hitung semua baris yang ada namanya
             return df.groupby('Nama PIC').size().reset_index(name='Tickets')
     return pd.DataFrame(columns=['Nama PIC', 'Tickets'])
 
@@ -66,7 +96,6 @@ st.title("📊 Productivity Ticketing Dashboard")
 with st.sidebar:
     st.header("📂 Upload 4 File Data")
     
-    # Perubahan struktur 4 file uploader
     file_ticketing = st.file_uploader("1. Upload File Ticketing (BPS & TS)", type=['xlsx', 'csv'])
     file_pms = st.file_uploader("2. Upload File PMS", type=['xlsx', 'csv'])
     file_pmg = st.file_uploader("3. Upload File PMG", type=['xlsx', 'csv'])
@@ -78,17 +107,15 @@ with st.sidebar:
 # --- PROSES PENGGABUNGAN DATA ---
 data_list = []
 
-# Membaca masing-masing uploader dan memasukkannya ke kalkulasi utama
 if file_ticketing: 
-    data_list.append(process_ticketing_bps_ts(pd.read_excel(file_ticketing)))
+    data_list.append(process_ticketing_bps_ts(pd.read_excel(file_ticketing), "Ticketing (BPS & TS)"))
 if file_pms: 
-    data_list.append(process_pms_pmg(pd.read_excel(file_pms)))
+    data_list.append(process_general_status(pd.read_excel(file_pms), "PMS", "submit"))
 if file_pmg: 
-    data_list.append(process_pms_pmg(pd.read_excel(file_pmg)))
+    data_list.append(process_general_status(pd.read_excel(file_pmg), "PMG", "submit"))
 if file_pna: 
-    data_list.append(process_pna(pd.read_excel(file_pna)))
+    data_list.append(process_general_status(pd.read_excel(file_pna), "PNA", "close"))
 
-# Data dummy untuk visualisasi jika belum ada file yang diunggah
 if not data_list:
     st.info("Silakan upload minimal 1 file Excel dari menu di samping kiri untuk melihat data sebenarnya.")
     df_master = pd.DataFrame({
@@ -97,76 +124,82 @@ if not data_list:
         'Daily_Tickets': [2, 1, 0, 0, 3] 
     })
 else:
-    # Menggabungkan semua tiket dari 4 file berdasarkan Nama PIC
-    df_master = pd.concat(data_list).groupby('Nama PIC')['Tickets'].sum().reset_index()
-    # Asumsi sementara tiket harian di-set 1 (bisa disesuaikan logic filter tanggalnya nanti)
-    df_master['Daily_Tickets'] = 1 
+    df_merged = pd.concat(data_list)
+    if not df_merged.empty:
+        df_master = df_merged.groupby('Nama PIC')['Tickets'].sum().reset_index()
+        df_master['Daily_Tickets'] = 1 
+    else:
+        df_master = pd.DataFrame(columns=['Nama PIC', 'Tickets', 'Daily_Tickets'])
 
 # --- KALKULASI METRIK ---
-df_master['Ratio'] = df_master['Tickets'].apply(lambda x: calculate_ratio(x, current_day))
-df_master['Status Harian'] = df_master['Daily_Tickets'].apply(get_daily_status)
-df_master['Kategori Produktivitas'] = df_master['Ratio'].apply(get_productivity_category)
-df_master['Sisa Target'] = df_master['Tickets'].apply(lambda x: current_day - x if x < current_day else 0)
+if not df_master.empty:
+    df_master['Ratio'] = df_master['Tickets'].apply(lambda x: calculate_ratio(x, current_day))
+    df_master['Status Harian'] = df_master['Daily_Tickets'].apply(get_daily_status)
+    df_master['Kategori Produktivitas'] = df_master['Ratio'].apply(get_productivity_category)
+    df_master['Sisa Target'] = df_master['Tickets'].apply(lambda x: current_day - x if x < current_day else 0)
 
 # --- TABS LAYOUT ---
 tab1, tab2, tab3 = st.tabs(["📈 Dashboard & Analytics", "📋 Data Tabel", "💬 WA Broadcast Generator"])
 
-with tab1:
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total PIC Aktif", len(df_master))
-    col2.metric("Good Productivity", len(df_master[df_master['Kategori Produktivitas'] == 'Good']))
-    col3.metric("Warning (Zero/Very Poor)", len(df_master[df_master['Kategori Produktivitas'].isin(['Zero', 'Very Poor'])]))
-    
-    st.markdown("---")
-    
-    col_chart1, col_chart2 = st.columns(2)
-    with col_chart1:
-        fig_bar = px.bar(df_master, x='Nama PIC', y='Tickets', color='Kategori Produktivitas',
-                         color_discrete_map={'Good': '#00CC96', 'Poor': '#FFA15A', 'Very Poor': '#EF553B', 'Zero': '#636EFA'},
-                         title=f"Total Tiket per PIC (Target: {current_day})")
-        fig_bar.add_hline(y=current_day, line_dash="dash", annotation_text="Target Rasio 1.0", line_color="red")
-        st.plotly_chart(fig_bar, use_container_width=True)
+if not df_master.empty:
+    with tab1:
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total PIC Aktif", len(df_master))
+        col2.metric("Good Productivity", len(df_master[df_master['Kategori Produktivitas'] == 'Good']))
+        col3.metric("Warning (Zero/Very Poor)", len(df_master[df_master['Kategori Produktivitas'].isin(['Zero', 'Very Poor'])]))
         
-    with col_chart2:
-        fig_pie = px.pie(df_master, names='Kategori Produktivitas', 
-                         color='Kategori Produktivitas',
-                         color_discrete_map={'Good': '#00CC96', 'Poor': '#FFA15A', 'Very Poor': '#EF553B', 'Zero': '#636EFA'},
-                         title="Distribusi Produktivitas Tim")
-        st.plotly_chart(fig_pie, use_container_width=True)
-
-with tab2:
-    st.subheader("Data Perhitungan Produktivitas")
-    df_display = df_master.style.format({'Ratio': "{:.2f}"})
-    st.dataframe(df_display, use_container_width=True)
-
-with tab3:
-    st.subheader("Generate Broadcast WhatsApp")
-    
-    def generate_broadcast(df, current_day):
-        waktu = datetime.now().strftime("%H:%00 WIB")
+        st.markdown("---")
         
-        txt = f"📢 *UPDATE TICKETING PRODUCTIVITY* 📢\n"
-        txt += f"📅 Tanggal: {datetime.now().strftime('%d %b %Y')}\n"
-        txt += f"⏰ Waktu: {waktu}\n"
-        txt += f"🎯 Target Hari Ini: {current_day} Tiket (Rasio 1.0)\n\n"
-        
-        need_attention = df[df['Kategori Produktivitas'].isin(['Zero', 'Very Poor', 'Poor'])].sort_values('Ratio')
-        
-        if need_attention.empty:
-            txt += "✅ *Luar biasa! Semua tim berada di rasio Good (Rasio >= 1.0).* Pertahankan!\n"
-        else:
-            txt += "🚨 *PERLU PERHATIAN KHUSUS (Status: Not Safe / Warning)* 🚨\n"
-            txt += "Harap segera ambil dan selesaikan tiket untuk memperbaiki rasio produktivitas harian Anda:\n\n"
+        col_chart1, col_chart2 = st.columns(2)
+        with col_chart1:
+            fig_bar = px.bar(df_master, x='Nama PIC', y='Tickets', color='Kategori Produktivitas',
+                             color_discrete_map={'Good': '#00CC96', 'Poor': '#FFA15A', 'Very Poor': '#EF553B', 'Zero': '#636EFA'},
+                             title=f"Total Tiket per PIC (Target: {current_day})")
+            fig_bar.add_hline(y=current_day, line_dash="dash", annotation_text="Target Rasio 1.0", line_color="red")
+            st.plotly_chart(fig_bar, use_container_width=True)
             
-            for index, row in need_attention.iterrows():
-                tag_name = f"@{row['Nama PIC'].replace(' ', '')}"
-                txt += f"▪️ {tag_name} - *{row['Kategori Produktivitas'].upper()}*\n"
-                txt += f"   Total Tiket: {row['Tickets']} | Rasio: {row['Ratio']:.2f}\n"
-                txt += f"   Status Hari Ini: {row['Status Harian']}\n"
-                txt += f"   *Butuh {row['Sisa Target']} tiket lagi* untuk mencapai rasio aman (1.0).\n\n"
+        with col_chart2:
+            fig_pie = px.pie(df_master, names='Kategori Produktivitas', 
+                             color='Kategori Produktivitas',
+                             color_discrete_map={'Good': '#00CC96', 'Poor': '#FFA15A', 'Very Poor': '#EF553B', 'Zero': '#636EFA'},
+                             title="Distribusi Produktivitas Tim")
+            st.plotly_chart(fig_pie, use_container_width=True)
+    
+    with tab2:
+        st.subheader("Data Perhitungan Produktivitas")
+        df_display = df_master.style.format({'Ratio': "{:.2f}"})
+        st.dataframe(df_display, use_container_width=True)
+    
+    with tab3:
+        st.subheader("Generate Broadcast WhatsApp")
+        
+        def generate_broadcast(df, current_day):
+            waktu = datetime.now().strftime("%H:%00 WIB")
+            
+            txt = f"📢 *UPDATE TICKETING PRODUCTIVITY* 📢\n"
+            txt += f"📅 Tanggal: {datetime.now().strftime('%d %b %Y')}\n"
+            txt += f"⏰ Waktu: {waktu}\n"
+            txt += f"🎯 Target Hari Ini: {current_day} Tiket (Rasio 1.0)\n\n"
+            
+            need_attention = df[df['Kategori Produktivitas'].isin(['Zero', 'Very Poor', 'Poor'])].sort_values('Ratio')
+            
+            if need_attention.empty:
+                txt += "✅ *Luar biasa! Semua tim berada di rasio Good (Rasio >= 1.0).* Pertahankan!\n"
+            else:
+                txt += "🚨 *PERLU PERHATIAN KHUSUS (Status: Not Safe / Warning)* 🚨\n"
+                txt += "Harap segera ambil dan selesaikan tiket untuk memperbaiki rasio produktivitas harian Anda:\n\n"
                 
-        txt += "Terima kasih atas kerja kerasnya. Semangat! 💪"
-        return txt
-
-    broadcast_text = generate_broadcast(df_master, current_day)
-    st.text_area("Copy Teks di Bawah Ini ke Grup WA:", value=broadcast_text, height=400)
+                for index, row in need_attention.iterrows():
+                    tag_name = f"@{row['Nama PIC'].replace(' ', '')}"
+                    txt += f"▪️ {tag_name} - *{row['Kategori Produktivitas'].upper()}*\n"
+                    txt += f"   Total Tiket: {row['Tickets']} | Rasio: {row['Ratio']:.2f}\n"
+                    txt += f"   Status Hari Ini: {row['Status Harian']}\n"
+                    txt += f"   *Butuh {row['Sisa Target']} tiket lagi* untuk mencapai rasio aman (1.0).\n\n"
+                    
+            txt += "Terima kasih atas kerja kerasnya. Semangat! 💪"
+            return txt
+    
+        broadcast_text = generate_broadcast(df_master, current_day)
+        st.text_area("Copy Teks di Bawah Ini ke Grup WA:", value=broadcast_text, height=400)
+else:
+    st.warning("Data kosong atau format file tidak dikenali. Pastikan file Excel berisi data yang valid.")
