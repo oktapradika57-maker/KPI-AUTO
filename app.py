@@ -5,7 +5,7 @@ from datetime import datetime
 import io
 import calendar
 
-st.set_page_config(page_title="Productivity & Tracker", layout="wide")
+st.set_page_config(page_title="Productivity & KPI Tracker", layout="wide")
 
 # --- HELPER FUNCTIONS ---
 def calculate_ratio(total_tickets, target_days):
@@ -26,6 +26,9 @@ def get_productivity_category(ratio):
     elif 0 < ratio < 0.2: return "Very Poor"
     else: return "Zero"
 
+def normalize_name(name):
+    return str(name).strip().title()
+
 # --- CACHED PROCESSORS ---
 @st.cache_data(show_spinner=False)
 def process_swfm_file(file_bytes):
@@ -40,7 +43,7 @@ def process_swfm_file(file_bytes):
         take_over = df.iloc[:, 35] # Kolom AJ (Take Over Date)
         check_in = df.iloc[:, 36]  # Kolom AK (Check In At)
         
-        # HANYA HITUNG JIKA KOLOM CHECK IN AT (KOLOM AK) TERISI / TIDAK KOSONG
+        # HANYA HITUNG JIKA KOLOM CHECK IN AT (KOLOM AK) TERISI
         valid_mask = check_in.notna()
         
         ticket_series = ticket[valid_mask].astype(str)
@@ -156,11 +159,14 @@ def process_fna_file(file_bytes):
         return pd.DataFrame()
 
 # --- UI DASHBOARD ---
-st.title("📊 Master Productivity & Tracker")
+st.title("📊 Master Productivity & KPI Tracker")
 
 with st.sidebar:
-    st.header("📂 Upload 4 File Utama")
+    st.header("📂 Upload File Data")
     
+    file_pic = st.file_uploader("0. Master Nama PIC (nama pic.xlsx)", type=['xlsx', 'xls'])
+    
+    st.markdown("---")
     file_swfm = st.file_uploader("1. Ticket_SWFM (TS & BPS)", type=['xlsx', 'xls'])
     file_pms = st.file_uploader("2. PM Site", type=['xlsx', 'xls'])
     file_pmg = st.file_uploader("3. PM Genset", type=['xlsx', 'xls'])
@@ -168,7 +174,6 @@ with st.sidebar:
     
     st.markdown("---")
     st.header("⚙️ Parameter Rentang Waktu")
-    
     today = datetime.now()
     first_day = today.replace(day=1)
     date_range = st.date_input("Rentang Waktu Tiket", value=(first_day, today))
@@ -192,24 +197,40 @@ if file_pms: raw_data_list.append(process_pms_file(file_pms.getvalue()))
 if file_pmg: raw_data_list.append(process_pmg_file(file_pmg.getvalue()))
 if file_fna: raw_data_list.append(process_fna_file(file_fna.getvalue()))
 
+# Hapus nama tertentu dari seluruh perhitungan secara absolut
+excluded_from_all = ['okta pradika', 'harminto', 'armadi', 'muhamad rayhan']
+
 if not raw_data_list:
-    st.warning("⚠️ Silakan upload file Excel pada menu di sidebar kiri (TS/BPS, PMS, PMG, FNA) untuk melihat data.")
+    st.warning("⚠️ Silakan upload file Excel pada menu di sidebar kiri untuk melihat data.")
     df_raw = pd.DataFrame(columns=['Source', 'Ticket ID', 'Site ID', 'Site Name', 'Nama PIC', 'Status', 'Take Over Date', 'Check In At', 'Tanggal Utama'])
 else:
     df_raw = pd.concat(raw_data_list, ignore_index=True)
     df_raw['Tanggal Utama'] = pd.to_datetime(df_raw['Tanggal Utama'], errors='coerce')
     df_raw = df_raw.dropna(subset=['Nama PIC'])
     
-    # FILTER EXCLUDE NAMA TERTENTU DARI ALL DATA
-    excluded_from_all = ['okta pradika', 'harminto', 'armadi', 'muhamad rayhan']
-    df_raw = df_raw[~df_raw['Nama PIC'].astype(str).str.lower().apply(lambda x: any(ex in x for ex in excluded_from_all))]
+    # Standarisasi huruf PIC pada data lapangan
+    df_raw['Nama PIC'] = df_raw['Nama PIC'].apply(normalize_name)
+    df_raw = df_raw[~df_raw['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_all))]
+
+# --- BACA MASTER NAMA PIC (JIKA ADA) ---
+master_pic_df = pd.DataFrame(columns=['Nama PIC'])
+if file_pic:
+    try:
+        df_master_pic = pd.read_excel(file_pic)
+        # Asumsi kolom pertama di file nama pic.xlsx berisi daftar nama
+        master_names = df_master_pic.iloc[:, 0].dropna().apply(normalize_name).unique()
+        master_pic_df = pd.DataFrame({'Nama PIC': master_names})
+        # Filter nama yang harus di-exclude secara absolut
+        master_pic_df = master_pic_df[~master_pic_df['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_all))]
+    except Exception as e:
+        st.error(f"Gagal membaca file Master PIC: {e}")
 
 # --- TABS LAYOUT ---
 tab1, tab2, tab3, tab4 = st.tabs(["📈 Analisa Rentang Waktu", "📅 Matriks Performa Bulanan", "💬 WA Broadcast", "🗄️ Raw Data & Export"])
 
 if not df_raw.empty:
     
-    # === DATA PREP TAB 1 (FILTER RENTANG WAKTU) ===
+    # === DATA PREP TAB 1 (FILTER RENTANG WAKTU & MERGE MASTER PIC) ===
     start_date = pd.to_datetime(date_range[0])
     end_date = pd.to_datetime(date_range[1]).replace(hour=23, minute=59, second=59)
     df_filtered_date = df_raw[(df_raw['Tanggal Utama'] >= start_date) & (df_raw['Tanggal Utama'] <= end_date)]
@@ -231,16 +252,22 @@ if not df_raw.empty:
             breakdown[col] = 0
 
     breakdown = breakdown[['Nama PIC', 'PMS', 'PMG', 'FNA', 'BPS', 'TS']]
+
+    # JIKA FILE MASTER PIC ADA: Lakukan penggabungan agar nama yang tidak ada tiket menjadi 0, dan nama asing diabaikan
+    if not master_pic_df.empty:
+        breakdown = pd.merge(master_pic_df, breakdown, on='Nama PIC', how='left').fillna(0)
+    else:
+        # Fallback jika tidak ada Master PIC: masukkan semua orang yang pernah setor data di df_raw
+        all_pics = df_raw['Nama PIC'].unique()
+        missing_pics = set(all_pics) - set(breakdown['Nama PIC'].unique())
+        if missing_pics:
+            df_missing = pd.DataFrame({'Nama PIC': list(missing_pics), 'PMS': 0, 'PMG': 0, 'FNA': 0, 'BPS': 0, 'TS': 0})
+            breakdown = pd.concat([breakdown, df_missing], ignore_index=True)
+
     breakdown['Total Tiket'] = breakdown[['PMS', 'PMG', 'FNA', 'BPS', 'TS']].sum(axis=1)
     breakdown['Ratio'] = breakdown['Total Tiket'].apply(lambda x: calculate_ratio(x, target_days))
     breakdown['Kategori Produktivitas'] = breakdown['Ratio'].apply(get_productivity_category)
     breakdown['Sisa Target'] = breakdown['Total Tiket'].apply(lambda x: target_days - x if x < target_days else 0)
-
-    all_pics = df_raw['Nama PIC'].unique()
-    missing_pics = set(all_pics) - set(breakdown['Nama PIC'].unique())
-    if missing_pics:
-        df_missing = pd.DataFrame({'Nama PIC': list(missing_pics), 'PMS': 0, 'PMG': 0, 'FNA': 0, 'BPS': 0, 'TS': 0, 'Total Tiket': 0, 'Ratio': 0.0, 'Kategori Produktivitas': 'Zero', 'Sisa Target': target_days})
-        breakdown = pd.concat([breakdown, df_missing], ignore_index=True)
 
     df_master = breakdown.copy()
     if kategori_filter:
@@ -249,15 +276,20 @@ if not df_raw.empty:
     # === TAB 1: DASHBOARD UTAMA & RINCIAN PER PIC ===
     with tab1:
         st.subheader(f"Rincian Perolehan Tiket per PIC (Target: {target_days} Hari)")
+        if not master_pic_df.empty:
+            st.success("✅ Menggunakan referensi baku dari file Master Nama PIC. Nama asing tidak akan dihitung, dan PIC tanpa tiket otomatis bernilai 0.")
+        
         col1, col2, col3 = st.columns(3)
-        col1.metric("Total PIC Ditampilkan", len(df_master))
+        col1.metric("Total PIC Aktif Terdata", len(df_master))
         col2.metric("Good Productivity", len(df_master[df_master['Kategori Produktivitas'] == 'Good']))
         col3.metric("Warning (Zero/Very Poor)", len(df_master[df_master['Kategori Produktivitas'].isin(['Zero', 'Very Poor'])]))
         
         st.markdown("---")
         
         st.write("📋 **Tabel Rincian Jumlah Tiket Masing-Masing Kategori & Total:**")
-        st.dataframe(df_master[['Nama PIC', 'PMS', 'PMG', 'FNA', 'BPS', 'TS', 'Total Tiket', 'Ratio', 'Kategori Produktivitas']].style.format({'Ratio': "{:.2f}"}), use_container_width=True)
+        # Format angka agar tidak ada desimal di kolom tiket
+        format_dict = {'PMS': '{:.0f}', 'PMG': '{:.0f}', 'FNA': '{:.0f}', 'BPS': '{:.0f}', 'TS': '{:.0f}', 'Total Tiket': '{:.0f}', 'Ratio': '{:.2f}'}
+        st.dataframe(df_master[['Nama PIC', 'PMS', 'PMG', 'FNA', 'BPS', 'TS', 'Total Tiket', 'Ratio', 'Kategori Produktivitas']].style.format(format_dict), use_container_width=True)
         
         st.markdown("---")
         col_chart1, col_chart2 = st.columns(2)
@@ -274,11 +306,16 @@ if not df_raw.empty:
                 fig_ratio.add_hline(y=1.0, line_dash="dash", annotation_text="Target Rasio 1.0", line_color="red")
                 st.plotly_chart(fig_ratio, use_container_width=True)
 
-    # === TAB 2: MATRIKS PERFORMA BULANAN (FLEKSIBEL & MULTI-FILTER) ===
+    # === TAB 2: MATRIKS PERFORMA BULANAN (FLEKSIBEL) ===
     with tab2:
-        st.subheader("Matriks Rasio Produktivitas Bulanan (Fleksibel)")
+        st.subheader("Matriks Rasio Produktivitas Bulanan")
         
         df_matrix_raw = df_raw.dropna(subset=['Tanggal Utama']).copy()
+        
+        # Saring Raw Data agar hanya memasukkan nama dari Master PIC (jika ada)
+        if not master_pic_df.empty:
+            df_matrix_raw = pd.merge(df_matrix_raw, master_pic_df, on='Nama PIC', how='inner')
+
         df_matrix_raw['Bulan_Sort'] = df_matrix_raw['Tanggal Utama'].dt.to_period('M')
         df_matrix_raw['DaysInMonth'] = df_matrix_raw['Tanggal Utama'].dt.daysinmonth
         
@@ -286,8 +323,13 @@ if not df_raw.empty:
         monthly_tickets['Ratio'] = monthly_tickets['Tickets'] / monthly_tickets['DaysInMonth']
         
         matrix_pivot = monthly_tickets.pivot(index='Nama PIC', columns='Bulan_Sort', values='Ratio').fillna(0)
-        
         available_months = sorted(matrix_pivot.columns)
+        
+        # Tambahkan PIC yang 0 tiket full di matrix
+        if not master_pic_df.empty:
+            for pic in master_pic_df['Nama PIC']:
+                if pic not in matrix_pivot.index:
+                    matrix_pivot.loc[pic] = 0.0
         
         col_m1, col_m2 = st.columns(2)
         selected_months = col_m1.multiselect("📅 Pilih Bulan yang Ingin Ditampilkan", options=available_months, default=available_months[-4:] if len(available_months)>=4 else available_months, format_func=lambda x: x.strftime('%B %Y'))
@@ -325,51 +367,61 @@ if not df_raw.empty:
         else:
             st.info("Silakan pilih minimal 1 bulan pada filter di atas.")
 
-    # === TAB 3: WA BROADCAST (FORMAT RAPI & EKSKLUSI DARLI, INDRA, DLL) ===
+    # === TAB 3: WA BROADCAST (FORMAT PROFESSIONAL + TOP WORST) ===
     with tab3:
-        st.subheader("Generate Broadcast WhatsApp (Clean Format)")
+        st.subheader("Generate Broadcast WhatsApp (Professional Template)")
         waktu_str = datetime.now().strftime("%d %b %Y - %H:%00 WIB")
         
-        excluded_names = ['darli', 'indra', 'riko setiadi', 'riki hidayat']
-        def is_excluded(name):
-            return any(ex in str(name).lower() for ex in excluded_names)
-            
-        broadcast_df = df_master[~df_master['Nama PIC'].apply(is_excluded)]
+        # Pengecualian nama-nama tertentu HANYA dari tampilan WA Broadcast
+        excluded_from_wa = ['darli', 'indra', 'riko setiadi', 'riki hidayat']
+        broadcast_df = df_master[~df_master['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_wa))]
         
-        txt = f"📢 *UPDATE TICKETING PRODUCTIVITY* 📢\n"
-        txt += f"📅 Periode: {date_range[0].strftime('%d %b %Y')} s/d {date_range[1].strftime('%d %b %Y')}\n"
-        txt += f"⏰ Waktu Report: {waktu_str}\n"
-        txt += f"🎯 Target Hari: *{target_days} Hari* (Rasio Standar: >= 1.0)\n"
-        txt += "──────────────────────────\n\n"
+        # Filter yang masuk status Not Safe
+        need_attention = broadcast_df[broadcast_df['Kategori Produktivitas'].isin(['Zero', 'Very Poor', 'Poor'])].sort_values(['Ratio', 'Total Tiket'])
         
-        need_attention = broadcast_df[broadcast_df['Kategori Produktivitas'].isin(['Zero', 'Very Poor', 'Poor'])].sort_values('Ratio')
+        txt = f"📊 *DAILY PRODUCTIVITY REPORT* 📊\n"
+        txt += f"🗓️ *Periode:* {date_range[0].strftime('%d %b %Y')} s/d {date_range[1].strftime('%d %b %Y')}\n"
+        txt += f"⏰ *Update:* {waktu_str}\n"
+        txt += f"🎯 *Target:* {target_days} Hari (Rasio Aman >= 1.0)\n"
+        txt += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         
         if need_attention.empty:
-            txt += "✅ *Luar biasa! Seluruh personel berada di kategori Good (Rasio >= 1.0).* Pertahankan kinerjanya! 💪\n"
+            txt += "✅ *LUAR BIASA!* Seluruh personel telah mencapai Rasio *GOOD* (>= 1.0).\n\nPertahankan kinerjanya! 💪\n\n"
         else:
-            txt += "🚨 *DAFTAR PERHATIAN KHUSUS (Status: Not Safe / Warning)* 🚨\n"
-            txt += "Harap segera ambil dan selesaikan tiket untuk mendongkrak rasio harian:\n\n"
+            # === TOP 3 WORST SECTION ===
+            top_3 = need_attention.head(3)
+            txt += "⚠️ *TOP 3 PIC PERLU PERHATIAN UTAMA* ⚠️\n"
+            txt += "_Diharap untuk segera menyelesaikan / mengambil tiket:_\n\n"
+            
+            for idx, (index, row) in enumerate(top_3.iterrows(), 1):
+                txt += f"{idx}. @{row['Nama PIC'].replace(' ', '')} ➔ Rasio: *{row['Ratio']:.2f}* (Total {int(row['Total Tiket'])} Tiket)\n"
+            
+            # === FULL LIST SECTION ===
+            txt += "\n📋 *DAFTAR STATUS NOT SAFE LENGKAP (Rasio < 1.0)*\n"
             for index, row in need_attention.iterrows():
                 tag_name = f"@{row['Nama PIC'].replace(' ', '')}"
                 txt += f"▪️ {tag_name} — *{row['Kategori Produktivitas'].upper()}*\n"
-                txt += f"   • Total Tiket: *{row['Total Tiket']}* (PMS:{row['PMS']} | PMG:{row['PMG']} | FNA:{row['FNA']} | BPS:{row['BPS']} | TS:{row['TS']})\n"
-                txt += f"   • Rasio: *{row['Ratio']:.2f}* | Kurang: *{int(row['Sisa Target'])}* tiket lagi\n\n"
+                txt += f"   └ Total: *{int(row['Total Tiket'])}* (PMS:{int(row['PMS'])} | PMG:{int(row['PMG'])} | FNA:{int(row['FNA'])} | BPS:{int(row['BPS'])} | TS:{int(row['TS'])})\n"
+                txt += f"   └ Rasio: *{row['Ratio']:.2f}* (Kurang *{int(row['Sisa Target'])}* tiket)\n\n"
                 
-        txt += "──────────────────────────\n"
-        txt += "Terimakasih atas kerja keras & dedikasinya rekan-rekan. Tetap semangat! 🚀"
+        txt += "━━━━━━━━━━━━━━━━━━━━━━\n"
+        txt += "Terima kasih atas dedikasinya rekan-rekan. Tetap semangat dan selalu jaga keselamatan kerja! 🚀"
         
-        st.text_area("Copy Teks Broadcast:", value=txt, height=400)
+        st.text_area("Copy Teks Broadcast ke Grup WhatsApp:", value=txt, height=450)
 
     # === TAB 4: RAW DATA & EXPORT ===
     with tab4:
-        st.subheader("🗄️ Master Database Gabungan (TS, BPS, PMS, PMG, FNA)")
-        st.write("Semua data berhasil digabungkan lengkap dengan rincian kategori sumber tiket.")
+        st.subheader("🗄️ Master Database Gabungan")
+        st.write("Semua data berhasil digabungkan lengkap dengan rincian kategori sumber tiket (telah difilter mengikuti nama baku).")
         
         col_f1, col_f2 = st.columns(2)
         filter_source = col_f1.multiselect("Filter Sumber Kategori", options=df_raw['Source'].unique(), default=df_raw['Source'].unique())
         filter_nama = col_f2.text_input("Cari Nama PIC di Database")
         
         df_export = df_raw.copy()
+        if not master_pic_df.empty:
+            df_export = pd.merge(df_export, master_pic_df, on='Nama PIC', how='inner')
+            
         if filter_source:
             df_export = df_export[df_export['Source'].isin(filter_source)]
         if filter_nama:
