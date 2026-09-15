@@ -5,7 +5,7 @@ from datetime import datetime
 import io
 import calendar
 
-st.set_page_config(page_title="Productivity & KPI Tracker", layout="wide")
+st.set_page_config(page_title="Productivity & Tracker", layout="wide")
 
 # --- HELPER FUNCTIONS ---
 def calculate_ratio(total_tickets, target_days):
@@ -156,7 +156,7 @@ def process_fna_file(file_bytes):
         return pd.DataFrame()
 
 # --- UI DASHBOARD ---
-st.title("📊 Master Productivity & KPI Tracker")
+st.title("📊 Master Productivity & Tracker")
 
 with st.sidebar:
     st.header("📂 Upload 4 File Utama")
