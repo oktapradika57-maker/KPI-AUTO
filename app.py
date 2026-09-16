@@ -13,14 +13,6 @@ def calculate_ratio(total_tickets, target_days):
     if target_days == 0: return 0
     return total_tickets / target_days
 
-def get_daily_status(daily_tickets):
-    if daily_tickets == 0:
-        return "🔴 0 ticketing"
-    elif daily_tickets == 1:
-        return "🟡 Not safe, need more ticket"
-    else:
-        return "🟢 Safe, waiting next ticket"
-
 def get_productivity_category(ratio):
     if ratio >= 1.0: return "Good"
     elif 0.2 <= ratio < 1.0: return "Poor"
@@ -159,12 +151,58 @@ def process_fna_file(file_bytes):
         st.error(f"Error pembacaan Export List Ticket (FNA): {e}")
         return pd.DataFrame()
 
+# --- BACA MASTER NAMA PIC & NOP (OTOMATIS DARI GITHUB) ---
+master_pic_df = pd.DataFrame(columns=['Nama PIC', 'NOP'])
+file_master_name = "nama pic_2.xlsx"
+excluded_from_all = ['okta pradika', 'harminto', 'armadi', 'muhamad rayhan']
+
+if os.path.exists(file_master_name):
+    try:
+        df_master_pic = pd.read_excel(file_master_name)
+        
+        # Asumsi cerdas pencarian kolom Nama & NOP
+        name_col = df_master_pic.columns[0]
+        for col in df_master_pic.columns:
+            if 'nama' in str(col).lower() or 'pic' in str(col).lower():
+                name_col = col
+                break
+                
+        nop_col = df_master_pic.columns[1] if len(df_master_pic.columns) > 1 else None
+        for col in df_master_pic.columns:
+            if 'nop' in str(col).lower():
+                nop_col = col
+                break
+                
+        # Hilangkan baris yang namanya kosong
+        df_master_pic = df_master_pic.dropna(subset=[name_col])
+        master_pic_df['Nama PIC'] = df_master_pic[name_col].apply(normalize_name)
+        
+        # Merapikan format NOP
+        if nop_col is not None:
+            def format_nop(x):
+                x = str(x).strip()
+                if x.lower() in ['nan', '', 'none', 'nat']: return 'Tidak Terdeteksi'
+                if not x.lower().startswith('nop'):
+                    return 'NOP ' + x.title()
+                return 'NOP ' + x[4:].strip().title()
+            master_pic_df['NOP'] = df_master_pic[nop_col].apply(format_nop)
+        else:
+            master_pic_df['NOP'] = 'Tidak Terdeteksi'
+            
+        # Hapus nama tertentu secara mutlak dan bersihkan duplikat
+        master_pic_df = master_pic_df[~master_pic_df['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_all))]
+        master_pic_df = master_pic_df.drop_duplicates(subset=['Nama PIC'])
+    except Exception as e:
+        st.warning(f"⚠️ Gagal memproses file {file_master_name}: {e}")
+else:
+    st.error(f"❌ File '{file_master_name}' tidak ditemukan di sistem. Harap periksa nama file di GitHub.")
+
 # --- UI DASHBOARD ---
 st.title("📊 Master Productivity & KPI Tracker")
 
 with st.sidebar:
     st.header("📂 Upload 4 File Utama")
-    st.info("💡 File 'nama pic.xlsx' sudah otomatis terdeteksi dari sistem database.")
+    st.info(f"💡 Referensi Baku: **{file_master_name}** aktif memfilter NOP & PIC.")
     
     file_swfm = st.file_uploader("1. Ticket_SWFM (TS & BPS)", type=['xlsx', 'xls'])
     file_pms = st.file_uploader("2. PM Site", type=['xlsx', 'xls'])
@@ -183,86 +221,78 @@ with st.sidebar:
         target_days = 1
         
     st.info(f"🎯 Target Hari Evaluasi = {target_days} Hari")
-    
-    st.markdown("---")
-    kategori_options = ["Good", "Poor", "Very Poor", "Zero"]
-    kategori_filter = st.multiselect("Filter Kategori (Tab 1 & 3)", options=kategori_options, default=kategori_options)
 
 # --- PROSES PENGGABUNGAN RAW DATA ---
 raw_data_list = []
-
 if file_swfm: raw_data_list.append(process_swfm_file(file_swfm.getvalue()))
 if file_pms: raw_data_list.append(process_pms_file(file_pms.getvalue()))
 if file_pmg: raw_data_list.append(process_pmg_file(file_pmg.getvalue()))
 if file_fna: raw_data_list.append(process_fna_file(file_fna.getvalue()))
 
-# Hapus nama tertentu dari seluruh perhitungan secara absolut
-excluded_from_all = ['okta pradika', 'harminto', 'armadi', 'muhamad rayhan']
-
 if not raw_data_list:
-    st.warning("⚠️ Silakan upload file Excel pada menu di sidebar kiri untuk melihat data.")
+    st.warning("⚠️ Silakan upload file Excel pada menu di sidebar kiri untuk melihat analisis.")
     df_raw = pd.DataFrame(columns=['Source', 'Ticket ID', 'Site ID', 'Site Name', 'Nama PIC', 'Status', 'Take Over Date', 'Check In At', 'Tanggal Utama'])
 else:
     df_raw = pd.concat(raw_data_list, ignore_index=True)
     df_raw['Tanggal Utama'] = pd.to_datetime(df_raw['Tanggal Utama'], errors='coerce')
     df_raw = df_raw.dropna(subset=['Nama PIC'])
-    
-    # Standarisasi huruf PIC pada data lapangan
     df_raw['Nama PIC'] = df_raw['Nama PIC'].apply(normalize_name)
-    df_raw = df_raw[~df_raw['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_all))]
+    
+    # Penggabungan NOP berdasarkan Master PIC & Mengabaikan PIC yang tidak terdaftar
+    if not master_pic_df.empty:
+        df_raw = pd.merge(df_raw, master_pic_df[['Nama PIC', 'NOP']], on='Nama PIC', how='inner')
+    else:
+        df_raw['NOP'] = 'Tidak Terdeteksi'
 
-# --- BACA MASTER NAMA PIC (OTOMATIS DARI GITHUB REPO) ---
-master_pic_df = pd.DataFrame(columns=['Nama PIC'])
-if os.path.exists("nama pic.xlsx"):
-    try:
-        df_master_pic = pd.read_excel("nama pic.xlsx")
-        # Asumsi kolom pertama di file nama pic.xlsx berisi daftar nama
-        master_names = df_master_pic.iloc[:, 0].dropna().apply(normalize_name).unique()
-        master_pic_df = pd.DataFrame({'Nama PIC': master_names})
-        # Filter nama yang harus di-exclude secara absolut
-        master_pic_df = master_pic_df[~master_pic_df['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_all))]
-    except Exception as e:
-        st.warning(f"Gagal membaca file Master PIC: {e}")
+# --- FILTER MULTIPEL NOP DI SIDEBAR ---
+selected_nops = []
+if not master_pic_df.empty:
+    with st.sidebar:
+        st.markdown("---")
+        st.header("📍 Filter Area (NOP)")
+        available_nops = sorted(master_pic_df['NOP'].unique())
+        selected_nops = st.multiselect("Pilih NOP yang ingin ditampilkan", options=available_nops, default=available_nops)
+        
+        # Eksekusi Filter NOP ke Data Raw & Data Master PIC
+        if selected_nops:
+            df_raw = df_raw[df_raw['NOP'].isin(selected_nops)]
+            master_pic_df = master_pic_df[master_pic_df['NOP'].isin(selected_nops)]
+            
+    with st.sidebar:
+        st.markdown("---")
+        kategori_options = ["Good", "Poor", "Very Poor", "Zero"]
+        kategori_filter = st.multiselect("Filter Kategori", options=kategori_options, default=kategori_options)
 else:
-    st.warning("File 'nama pic.xlsx' tidak ditemukan di sistem. Harap pastikan file tersebut ada di repositori GitHub Anda.")
+    kategori_filter = []
 
 # --- TABS LAYOUT ---
 tab1, tab2, tab3, tab4 = st.tabs(["📈 Analisa Rentang Waktu", "📅 Matriks Performa Bulanan", "💬 WA Broadcast", "🗄️ Raw Data & Export"])
 
-if not df_raw.empty:
+if not df_raw.empty or (not master_pic_df.empty and selected_nops):
     
-    # === DATA PREP TAB 1 (FILTER RENTANG WAKTU & MERGE MASTER PIC) ===
+    # === DATA PREP TAB 1 ===
     start_date = pd.to_datetime(date_range[0])
     end_date = pd.to_datetime(date_range[1]).replace(hour=23, minute=59, second=59)
     df_filtered_date = df_raw[(df_raw['Tanggal Utama'] >= start_date) & (df_raw['Tanggal Utama'] <= end_date)]
     
     if not df_filtered_date.empty:
-        breakdown = pd.pivot_table(
-            df_filtered_date,
-            index='Nama PIC',
-            columns='Source',
-            values='Ticket ID',
-            aggfunc='count',
-            fill_value=0
-        ).reset_index()
+        breakdown = pd.pivot_table(df_filtered_date, index='Nama PIC', columns='Source', values='Ticket ID', aggfunc='count', fill_value=0).reset_index()
     else:
         breakdown = pd.DataFrame(columns=['Nama PIC'])
 
     for col in ['PMS', 'PMG', 'FNA', 'BPS', 'TS']:
-        if col not in breakdown.columns:
-            breakdown[col] = 0
+        if col not in breakdown.columns: breakdown[col] = 0
 
     breakdown = breakdown[['Nama PIC', 'PMS', 'PMG', 'FNA', 'BPS', 'TS']]
 
-    # JIKA FILE MASTER PIC ADA: Lakukan penggabungan (Nama asing diabaikan, nama terdaftar tanpa tiket jadi 0)
+    # JIKA FILE MASTER PIC ADA: Lakukan penggabungan agar yang tidak ada tiket menjadi 0
     if not master_pic_df.empty:
-        breakdown = pd.merge(master_pic_df, breakdown, on='Nama PIC', how='left').fillna(0)
+        breakdown = pd.merge(master_pic_df[['Nama PIC', 'NOP']], breakdown, on='Nama PIC', how='left').fillna(0)
     else:
-        # Fallback jika master pic gagal terbaca
         all_pics = df_raw['Nama PIC'].unique()
         missing_pics = set(all_pics) - set(breakdown['Nama PIC'].unique())
         if missing_pics:
-            df_missing = pd.DataFrame({'Nama PIC': list(missing_pics), 'PMS': 0, 'PMG': 0, 'FNA': 0, 'BPS': 0, 'TS': 0})
+            df_missing = pd.DataFrame({'Nama PIC': list(missing_pics), 'PMS': 0, 'PMG': 0, 'FNA': 0, 'BPS': 0, 'TS': 0, 'NOP': 'Tidak Terdeteksi'})
             breakdown = pd.concat([breakdown, df_missing], ignore_index=True)
 
     breakdown['Total Tiket'] = breakdown[['PMS', 'PMG', 'FNA', 'BPS', 'TS']].sum(axis=1)
@@ -278,10 +308,10 @@ if not df_raw.empty:
     with tab1:
         st.subheader(f"Rincian Perolehan Tiket per PIC (Target: {target_days} Hari)")
         if not master_pic_df.empty:
-            st.success("✅ Referensi baku 'nama pic.xlsx' aktif. Nama yang tidak ada di daftar telah diabaikan otomatis.")
+            st.success("✅ **Sistem Master Mapping Aktif:** Mengabaikan PIC asing, menstandarkan data Area, dan melacak PIC berstatus 0 tiket secara presisi.")
         
         col1, col2, col3 = st.columns(3)
-        col1.metric("Total PIC Aktif Terdata", len(df_master))
+        col1.metric("Total PIC Aktif (Filtered Area)", len(df_master))
         col2.metric("Good Productivity", len(df_master[df_master['Kategori Produktivitas'] == 'Good']))
         col3.metric("Warning (Zero/Very Poor)", len(df_master[df_master['Kategori Produktivitas'].isin(['Zero', 'Very Poor'])]))
         
@@ -289,7 +319,7 @@ if not df_raw.empty:
         
         st.write("📋 **Tabel Rincian Jumlah Tiket Masing-Masing Kategori & Total:**")
         format_dict = {'PMS': '{:.0f}', 'PMG': '{:.0f}', 'FNA': '{:.0f}', 'BPS': '{:.0f}', 'TS': '{:.0f}', 'Total Tiket': '{:.0f}', 'Ratio': '{:.2f}'}
-        st.dataframe(df_master[['Nama PIC', 'PMS', 'PMG', 'FNA', 'BPS', 'TS', 'Total Tiket', 'Ratio', 'Kategori Produktivitas']].style.format(format_dict), use_container_width=True)
+        st.dataframe(df_master[['Nama PIC', 'NOP', 'PMS', 'PMG', 'FNA', 'BPS', 'TS', 'Total Tiket', 'Ratio', 'Kategori Produktivitas']].style.format(format_dict), use_container_width=True)
         
         st.markdown("---")
         col_chart1, col_chart2 = st.columns(2)
@@ -312,9 +342,6 @@ if not df_raw.empty:
         
         df_matrix_raw = df_raw.dropna(subset=['Tanggal Utama']).copy()
         
-        if not master_pic_df.empty:
-            df_matrix_raw = pd.merge(df_matrix_raw, master_pic_df, on='Nama PIC', how='inner')
-
         df_matrix_raw['Bulan_Sort'] = df_matrix_raw['Tanggal Utama'].dt.to_period('M')
         df_matrix_raw['DaysInMonth'] = df_matrix_raw['Tanggal Utama'].dt.daysinmonth
         
@@ -324,6 +351,7 @@ if not df_raw.empty:
         matrix_pivot = monthly_tickets.pivot(index='Nama PIC', columns='Bulan_Sort', values='Ratio').fillna(0)
         available_months = sorted(matrix_pivot.columns)
         
+        # Tambahkan PIC yang ada di master tapi belum ada tiket sama sekali ke matriks
         if not master_pic_df.empty:
             for pic in master_pic_df['Nama PIC']:
                 if pic not in matrix_pivot.index:
@@ -333,7 +361,7 @@ if not df_raw.empty:
         selected_months = col_m1.multiselect("📅 Pilih Bulan yang Ingin Ditampilkan", options=available_months, default=available_months[-4:] if len(available_months)>=4 else available_months, format_func=lambda x: x.strftime('%B %Y'))
         
         all_matrix_pics = sorted(matrix_pivot.index.tolist())
-        selected_matrix_pics = col_m2.multiselect("🔍 Filter Nama PIC (Kosongkan = Tampil Semua)", options=all_matrix_pics, default=[])
+        selected_matrix_pics = col_m2.multiselect("🔍 Filter Nama PIC pada Matriks (Kosong = Tampil Semua)", options=all_matrix_pics, default=[])
         
         if selected_months:
             matrix_display = matrix_pivot[selected_months].copy()
@@ -370,13 +398,16 @@ if not df_raw.empty:
         st.subheader("Generate Broadcast WhatsApp (Professional Template)")
         waktu_str = datetime.now().strftime("%d %b %Y - %H:%00 WIB")
         
-        # Pengecualian nama-nama tertentu HANYA dari tampilan WA Broadcast
+        # Pengecualian nama HANYA DARI TAMPILAN BROADCAST WA
         excluded_from_wa = ['darli', 'indra', 'riko setiadi', 'riki hidayat']
         broadcast_df = df_master[~df_master['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_wa))]
         
         need_attention = broadcast_df[broadcast_df['Kategori Produktivitas'].isin(['Zero', 'Very Poor', 'Poor'])].sort_values(['Ratio', 'Total Tiket'])
         
+        nops_display = ", ".join(selected_nops) if selected_nops else "Semua NOP"
+        
         txt = f"📊 *DAILY PRODUCTIVITY REPORT* 📊\n"
+        txt += f"📍 *Area / NOP:* {nops_display}\n"
         txt += f"🗓️ *Periode:* {date_range[0].strftime('%d %b %Y')} s/d {date_range[1].strftime('%d %b %Y')}\n"
         txt += f"⏰ *Update:* {waktu_str}\n"
         txt += f"🎯 *Target:* {target_days} Hari (Rasio Aman >= 1.0)\n"
@@ -391,13 +422,13 @@ if not df_raw.empty:
             txt += "_Diharap untuk segera menyelesaikan / mengambil tiket:_\n\n"
             
             for idx, (index, row) in enumerate(top_3.iterrows(), 1):
-                txt += f"{idx}. @{row['Nama PIC'].replace(' ', '')} ➔ Rasio: *{row['Ratio']:.2f}* (Total {int(row['Total Tiket'])} Tiket)\n"
+                txt += f"{idx}. @{row['Nama PIC'].replace(' ', '')} ({row['NOP']}) ➔ Rasio: *{row['Ratio']:.2f}* (Total {int(row['Total Tiket'])} Tiket)\n"
             
             # === FULL LIST SECTION ===
             txt += "\n📋 *DAFTAR STATUS NOT SAFE LENGKAP (Rasio < 1.0)*\n"
             for index, row in need_attention.iterrows():
                 tag_name = f"@{row['Nama PIC'].replace(' ', '')}"
-                txt += f"▪️ {tag_name} — *{row['Kategori Produktivitas'].upper()}*\n"
+                txt += f"▪️ {tag_name} - *{row['NOP']}* — *{row['Kategori Produktivitas'].upper()}*\n"
                 txt += f"   └ Total: *{int(row['Total Tiket'])}* (PMS:{int(row['PMS'])} | PMG:{int(row['PMG'])} | FNA:{int(row['FNA'])} | BPS:{int(row['BPS'])} | TS:{int(row['TS'])})\n"
                 txt += f"   └ Rasio: *{row['Ratio']:.2f}* (Kurang *{int(row['Sisa Target'])}* tiket)\n\n"
                 
@@ -416,8 +447,6 @@ if not df_raw.empty:
         filter_nama = col_f2.text_input("Cari Nama PIC di Database")
         
         df_export = df_raw.copy()
-        if not master_pic_df.empty:
-            df_export = pd.merge(df_export, master_pic_df, on='Nama PIC', how='inner')
             
         if filter_source:
             df_export = df_export[df_export['Source'].isin(filter_source)]
@@ -437,6 +466,6 @@ if not df_raw.empty:
         st.download_button(
             label="📥 Download Master Database ke Excel (.xlsx)",
             data=output.getvalue(),
-            file_name=f"Master_KPI_All_Files_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            file_name=f"Master_KPI_Filtered_NOP_{datetime.now().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
