@@ -156,9 +156,16 @@ master_pic_df = pd.DataFrame(columns=['Nama PIC', 'NOP'])
 file_master_name = "nama pic_2.xlsx"
 excluded_from_all = ['okta pradika', 'harminto', 'armadi', 'muhamad rayhan']
 
-if os.path.exists(file_master_name):
+# Pengecekan file secara case-insensitive agar lebih aman di Streamlit Cloud
+actual_master_file = None
+for f in os.listdir():
+    if f.lower() == file_master_name.lower():
+        actual_master_file = f
+        break
+
+if actual_master_file:
     try:
-        df_master_pic = pd.read_excel(file_master_name)
+        df_master_pic = pd.read_excel(actual_master_file)
         
         # Asumsi cerdas pencarian kolom Nama & NOP
         name_col = df_master_pic.columns[0]
@@ -195,7 +202,7 @@ if os.path.exists(file_master_name):
     except Exception as e:
         st.warning(f"⚠️ Gagal memproses file {file_master_name}: {e}")
 else:
-    st.error(f"❌ File '{file_master_name}' tidak ditemukan di sistem. Harap periksa nama file di GitHub.")
+    st.error(f"❌ File '{file_master_name}' tidak ditemukan di sistem. Harap periksa nama file di GitHub (perhatikan huruf besar/kecilnya).")
 
 # --- UI DASHBOARD ---
 st.title("📊 Master Productivity & KPI Tracker")
@@ -292,8 +299,12 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
         all_pics = df_raw['Nama PIC'].unique()
         missing_pics = set(all_pics) - set(breakdown['Nama PIC'].unique())
         if missing_pics:
-            df_missing = pd.DataFrame({'Nama PIC': list(missing_pics), 'PMS': 0, 'PMG': 0, 'FNA': 0, 'BPS': 0, 'TS': 0, 'NOP': 'Tidak Terdeteksi'})
+            df_missing = pd.DataFrame({'Nama PIC': list(missing_pics), 'PMS': 0, 'PMG': 0, 'FNA': 0, 'BPS': 0, 'TS': 0})
             breakdown = pd.concat([breakdown, df_missing], ignore_index=True)
+            
+        # [FIX] Pastikan kolom NOP tetap ada meski master file gagal dimuat
+        if 'NOP' not in breakdown.columns:
+            breakdown['NOP'] = 'Tidak Terdeteksi'
 
     breakdown['Total Tiket'] = breakdown[['PMS', 'PMG', 'FNA', 'BPS', 'TS']].sum(axis=1)
     breakdown['Ratio'] = breakdown['Total Tiket'].apply(lambda x: calculate_ratio(x, target_days))
