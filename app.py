@@ -925,6 +925,37 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
             tbl = style_cells(tbl, ratio_cell_style, subset=['Ratio'])
             show_df(tbl, hide_index=True)
 
+            # --- FITUR BARU: TOMBOL DOWNLOAD UNTUK SETIAP ROW (PER PIC) ---
+            section_title("📥 Export Rincian per PIC (Row-by-Row)", "Unduh daftar tiket spesifik untuk masing-masing personel (format CSV).")
+            with st.expander("Buka Tabel Download Per Baris"):
+                h1, h2, h3, h4, h5 = st.columns([3, 2.5, 1.5, 2, 3])
+                h1.markdown("**Nama PIC**")
+                h2.markdown("**Area (NOP)**")
+                h3.markdown("**Total Tiket**")
+                h4.markdown("**Status**")
+                h5.markdown("**Aksi (Download)**")
+                st.markdown("<hr style='margin: 8px 0;'>", unsafe_allow_html=True)
+                
+                for idx, row in df_master.sort_values(['Ratio', 'Total Tiket', 'Nama PIC']).iterrows():
+                    c1, c2, c3, c4, c5 = st.columns([3, 2.5, 1.5, 2, 3])
+                    c1.write(f"**{row['Nama PIC']}**")
+                    c2.write(f"{row['NOP']}")
+                    c3.write(f"{row['Total Tiket']}")
+                    
+                    cat_slug = CATEGORY_META[row['Kategori Produktivitas']]['slug']
+                    c4.markdown(f'<span class="chip {cat_slug}">{row["Kategori Produktivitas"]}</span>', unsafe_allow_html=True)
+                    
+                    pic_raw = df_raw[df_raw['Nama PIC'] == row['Nama PIC']]
+                    csv_data = pic_raw.to_csv(index=False).encode('utf-8')
+                    
+                    c5.download_button(
+                        label="⬇️ Download CSV",
+                        data=csv_data,
+                        file_name=f"Tiket_{row['Nama PIC'].replace(' ', '_')}_{d_start.strftime('%Y%m%d')}.csv",
+                        key=f"dl_row_{idx}_{row['Nama PIC']}"
+                    )
+            
+            section_title("Visualisasi Performa", "Komposisi sumber tiket dan posisi rasio setiap PIC terhadap target.")
             col_chart1, col_chart2 = st.columns(2)
             with col_chart1:
                 with panel():
