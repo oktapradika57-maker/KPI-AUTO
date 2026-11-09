@@ -925,8 +925,18 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
             tbl = style_cells(tbl, ratio_cell_style, subset=['Ratio'])
             show_df(tbl, hide_index=True)
 
+            # Tambahan: Tombol download seluruh tabel rincian langsung di bawah tabel utama
+            csv_all_summary = df_master.sort_values(['Ratio', 'Total Tiket', 'Nama PIC'])[table_cols].to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Seluruh Tabel Rincian & Perhitungan (CSV)",
+                data=csv_all_summary,
+                file_name=f"Summary_KPI_Seluruh_PIC_{wib_now.strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
             # --- FITUR BARU: TOMBOL DOWNLOAD UNTUK SETIAP ROW (PER PIC) ---
-            section_title("📥 Export Rincian per PIC (Row-by-Row)", "Unduh daftar tiket spesifik untuk masing-masing personel (format CSV).")
+            section_title("📥 Export Rincian per PIC (Row-by-Row)", "Unduh hasil perhitungan auto (Ratio, Sisa Target) beserta daftar tiket spesifik untuk masing-masing personel.")
             with st.expander("Buka Tabel Download Per Baris"):
                 h1, h2, h3, h4, h5 = st.columns([3, 2.5, 1.5, 2, 3])
                 h1.markdown("**Nama PIC**")
@@ -945,14 +955,21 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
                     cat_slug = CATEGORY_META[row['Kategori Produktivitas']]['slug']
                     c4.markdown(f'<span class="chip {cat_slug}">{row["Kategori Produktivitas"]}</span>', unsafe_allow_html=True)
                     
+                    # Menggabungkan Perhitungan Auto dan Raw Data Tiket
+                    pic_summary = row[table_cols].to_frame().T
                     pic_raw = df_raw[df_raw['Nama PIC'] == row['Nama PIC']]
-                    csv_data = pic_raw.to_csv(index=False).encode('utf-8')
+                    
+                    csv_text = "--- PERHITUNGAN AUTO KPI ---\n"
+                    csv_text += pic_summary.to_csv(index=False)
+                    csv_text += "\n--- DAFTAR TIKET (RAW DATA) ---\n"
+                    csv_text += pic_raw.to_csv(index=False)
+                    csv_data = csv_text.encode('utf-8')
                     
                     c5.download_button(
-                        label="⬇️ Download CSV",
+                        label="⬇️ Download Hasil & Data",
                         data=csv_data,
-                        file_name=f"Tiket_{row['Nama PIC'].replace(' ', '_')}_{d_start.strftime('%Y%m%d')}.csv",
-                        key=f"dl_row_{idx}_{row['Nama PIC']}"
+                        file_name=f"Perhitungan_dan_Tiket_{row['Nama PIC'].replace(' ', '_')}_{d_start.strftime('%Y%m%d')}.csv",
+                        key=f"dl_calc_row_{idx}_{row['Nama PIC']}"
                     )
             
             section_title("Visualisasi Performa", "Komposisi sumber tiket dan posisi rasio setiap PIC terhadap target.")
