@@ -3,6 +3,7 @@ import inspect
 import io
 import os
 import zlib
+import difflib
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -69,7 +70,7 @@ WA_LINK_LIMIT = 7800     # batas panjang URL wa.me
 # =============================================================================
 #  CSS  (tema enterprise: navy / cobalt, status semantik merah-oranye-kuning-hijau)
 # =============================================================================
-APP_CSS = """
+APP_CSS = '''
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
 :root{--ink:#0B1F3A;--slate:#51627A;--mist:#F4F6FA;--surface:#FFFFFF;--line:#DDE3EC;--cobalt:#1E4FB5;--zero:#B42318;--vpoor:#D4501A;--poor:#D99A00;--good:#0F8A5F;}
 .stApp{background:var(--mist);color:var(--ink);}
@@ -162,28 +163,19 @@ section[data-testid="stSidebar"]{background:var(--surface);border-right:1px soli
 section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"]{border:1.5px dashed #AFC0DD;border-radius:10px;background:#F8FAFD;}
 
 @media (max-width:900px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr));}.kpi{border-bottom:1px solid var(--line);}.lgs{grid-template-columns:repeat(2,minmax(0,1fr));}.hero-title{font-size:21px;}}
-"""
-
+'''
 
 def collapse(s):
-    """Rapatkan HTML ke satu baris agar tidak dianggap code-block oleh markdown."""
     return "".join(line.strip() for line in str(s).strip().splitlines())
-
 
 def esc(x):
     return html_lib.escape(str(x)).replace("$", "&#36;")
 
-
 def render(s):
     st.markdown(collapse(s), unsafe_allow_html=True)
 
-
 st.markdown(f"<style>{collapse(APP_CSS)}</style>", unsafe_allow_html=True)
 
-
-# =============================================================================
-#  KOMPATIBILITAS VERSI STREAMLIT
-# =============================================================================
 def _stretch(fn):
     try:
         params = inspect.signature(fn).parameters
@@ -195,20 +187,16 @@ def _stretch(fn):
         return {"width": "stretch"}
     return {}
 
-
 DF_KW = _stretch(st.dataframe)
 PLOT_KW = _stretch(st.plotly_chart)
 BTN_KW = _stretch(st.download_button)
 LINK_KW = _stretch(st.link_button) if hasattr(st, "link_button") else {}
 
-
 def show_df(data, hide_index=False):
     st.dataframe(data, hide_index=hide_index, **DF_KW)
 
-
 def show_chart(fig):
     st.plotly_chart(fig, theme=None, **PLOT_KW)
-
 
 def show_code(text):
     try:
@@ -216,26 +204,19 @@ def show_code(text):
     except TypeError:
         st.code(text, language=None)
 
-
 def panel():
     try:
         return st.container(border=True)
     except TypeError:
         return st.container()
 
-
 def style_cells(styler, func, subset=None):
     fn = styler.map if hasattr(styler, "map") else styler.applymap
     return fn(func, subset=subset) if subset is not None else fn(func)
 
-
-# =============================================================================
-#  HELPER FUNCTIONS (LOGIKA ASLI - TIDAK DIUBAH)
-# =============================================================================
 def calculate_ratio(total_tickets, target_days):
     if target_days == 0: return 0
     return total_tickets / target_days
-
 
 def get_productivity_category(ratio):
     if ratio >= 1.0: return "Good"
@@ -243,33 +224,23 @@ def get_productivity_category(ratio):
     elif 0 < ratio < 0.2: return "Very Poor"
     else: return "Zero"
 
-
 def normalize_name(name):
     return str(name).strip().title()
 
-
-# =============================================================================
-#  CACHED PROCESSORS (LOGIKA ASLI - TIDAK DIUBAH)
-# =============================================================================
 @st.cache_data(show_spinner=False)
 def process_swfm_file(file_bytes):
     try:
         df = pd.read_excel(io.BytesIO(file_bytes))
         if df.empty: return pd.DataFrame()
-
-        ticket = df.iloc[:, 1]     # Ticket Number SWFM
-        site_id = df.iloc[:, 4]    # Site Id
-        site_name = df.iloc[:, 5]  # Site Name
-        pic = df.iloc[:, 17]       # PIC Take Over Ticket
-        take_over = df.iloc[:, 35] # Kolom AJ (Take Over Date)
-        check_in = df.iloc[:, 36]  # Kolom AK (Check In At)
-
-        # HANYA HITUNG JIKA KOLOM CHECK IN AT (KOLOM AK) TERISI
+        ticket = df.iloc[:, 1]
+        site_id = df.iloc[:, 4]
+        site_name = df.iloc[:, 5]
+        pic = df.iloc[:, 17]
+        take_over = df.iloc[:, 35]
+        check_in = df.iloc[:, 36]
         valid_mask = check_in.notna()
-
         ticket_series = ticket[valid_mask].astype(str)
         source_series = ticket_series.apply(lambda x: 'BPS' if x.startswith('BPS') else ('TS' if x.startswith('TS') else 'TS'))
-
         sub = pd.DataFrame({
             'Source': source_series,
             'Ticket ID': ticket[valid_mask],
@@ -286,20 +257,17 @@ def process_swfm_file(file_bytes):
         st.error(f"Error pembacaan Ticket SWFM: {e}")
         return pd.DataFrame()
 
-
 @st.cache_data(show_spinner=False)
 def process_pms_file(file_bytes):
     try:
         df = pd.read_excel(io.BytesIO(file_bytes))
         if df.empty: return pd.DataFrame()
-
         ticket = df['Ticket No'] if 'Ticket No' in df.columns else df.iloc[:, 4]
         site_id = df['Site'] if 'Site' in df.columns else df.iloc[:, 5]
         site_name = df['Site Name'] if 'Site Name' in df.columns else df.iloc[:, 6]
         status = df['Status'] if 'Status' in df.columns else df.iloc[:, 13]
         tanggal = df['Submitted Date'] if 'Submitted Date' in df.columns else df.iloc[:, 14]
         pic = df['PIC'] if 'PIC' in df.columns else df.iloc[:, 15]
-
         valid_status = ['waiting approval amesty', 'submitted', 'closed']
         valid_mask = status.astype(str).str.lower().isin(valid_status)
         sub = pd.DataFrame({
@@ -318,20 +286,17 @@ def process_pms_file(file_bytes):
         st.error(f"Error pembacaan PM Site: {e}")
         return pd.DataFrame()
 
-
 @st.cache_data(show_spinner=False)
 def process_pmg_file(file_bytes):
     try:
         df = pd.read_excel(io.BytesIO(file_bytes))
         if df.empty: return pd.DataFrame()
-
         ticket = df['Ticket No'] if 'Ticket No' in df.columns else df.iloc[:, 4]
         site_id = df['Site'] if 'Site' in df.columns else df.iloc[:, 5]
         site_name = df['Site Name'] if 'Site Name' in df.columns else df.iloc[:, 6]
         status = df['Status'] if 'Status' in df.columns else df.iloc[:, 14]
         tanggal = df['Submitted Date'] if 'Submitted Date' in df.columns else df.iloc[:, 15]
         pic = df['PIC'] if 'PIC' in df.columns else df.iloc[:, 16]
-
         valid_status = ['waiting approval amesty', 'submitted', 'closed']
         valid_mask = status.astype(str).str.lower().isin(valid_status)
         sub = pd.DataFrame({
@@ -350,13 +315,11 @@ def process_pmg_file(file_bytes):
         st.error(f"Error pembacaan PM Genset: {e}")
         return pd.DataFrame()
 
-
 @st.cache_data(show_spinner=False)
 def process_fna_file(file_bytes):
     try:
         df = pd.read_excel(io.BytesIO(file_bytes))
         if df.empty: return pd.DataFrame()
-
         ticket = df['No ticket'] if 'No ticket' in df.columns else df.iloc[:, 0]
         site_id = df['Site'] if 'Site' in df.columns else df.iloc[:, 1]
         site_name = df['Site name'] if 'Site name' in df.columns else df.iloc[:, 2]
@@ -364,7 +327,6 @@ def process_fna_file(file_bytes):
         tanggal = df['Submit time'] if 'Submit time' in df.columns else df.iloc[:, 26]
         pic = df['User submitter'] if 'User submitter' in df.columns else df.iloc[:, 27]
         checkin_time = df['Checkin time'] if 'Checkin time' in df.columns else df.iloc[:, 23]
-
         valid_mask = status.astype(str).str.lower() == 'closed'
         sub = pd.DataFrame({
             'Source': 'FNA',
@@ -382,25 +344,17 @@ def process_fna_file(file_bytes):
         st.error(f"Error pembacaan Export List Ticket (FNA): {e}")
         return pd.DataFrame()
 
-
-# =============================================================================
-#  KOMPONEN UI
-# =============================================================================
 def section_title(title, desc=None):
     d = f"<p>{esc(desc)}</p>" if desc else ""
     render(f'<div class="sec"><h3>{esc(title)}</h3>{d}</div>')
 
-
 def note(kind, html_text):
-    """kind: crit | warn | ok | info.  html_text sudah dipercaya / di-escape pemanggil."""
     render(f'<div class="note {kind}">{html_text}</div>')
-
 
 def fmt_period(a, b):
     if a.year == b.year:
         return f"{a:%d %b} – {b:%d %b %Y}"
     return f"{a:%d %b %Y} – {b:%d %b %Y}"
-
 
 def describe_nops(selected, available, max_names=3):
     if not selected: return "Semua NOP"
@@ -408,9 +362,8 @@ def describe_nops(selected, available, max_names=3):
     if len(selected) <= max_names: return ", ".join(selected)
     return f"{len(selected)} NOP terpilih"
 
-
 def render_hero(period_txt, target_days, area_txt, n_sources):
-    render(f"""
+    render(f'''
     <div class="hero">
       <div>
         <div class="hero-title">Master Productivity &amp; KPI Tracker</div>
@@ -423,8 +376,7 @@ def render_hero(period_txt, target_days, area_txt, n_sources):
         <div><span>Sumber data</span><b>{n_sources} dari 4 file</b></div>
       </div>
     </div>
-    """)
-
+    ''')
 
 def kpi_strip(items):
     cells = "".join(
@@ -432,7 +384,6 @@ def kpi_strip(items):
         for l, v, s in items
     )
     render(f'<div class="kpis">{cells}</div>')
-
 
 def health_bar(counts, total):
     segs, legend = "", ""
@@ -453,9 +404,7 @@ def health_bar(counts, total):
         f'<div class="bar">{segs}</div><div class="lgs">{legend}</div></div>'
     )
 
-
 def build_insight(b, target_days):
-    """Penalaran otomatis untuk manajemen. Mengembalikan (tipe_note, html)."""
     total = len(b)
     if total == 0: return None
     vc = b['Kategori Produktivitas'].value_counts()
@@ -479,7 +428,6 @@ def build_insight(b, target_days):
         )
     return "ok", f"Seluruh <b>{total} PIC</b> telah mencapai rasio Good (≥ 1.0). Pertahankan kinerjanya."
 
-
 def style_fig(fig, height=430, rotate=True):
     fig.update_layout(
         template="plotly_white",
@@ -493,22 +441,17 @@ def style_fig(fig, height=430, rotate=True):
     fig.update_yaxes(gridcolor="#E7ECF3", zeroline=False)
     return fig
 
-
-# --- Styler tabel ---
 def cat_cell_style(val):
     m = CATEGORY_META.get(val)
     return f"background-color:{m['soft']};color:{m['ink']};font-weight:600" if m else ''
-
 
 def remark_cell_style(val):
     cat = {"URGENT": "Zero", "WARNING": "Poor", "ON TRACK": "Good"}.get(val)
     return cat_cell_style(cat) if cat else ''
 
-
 def ratio_cell_style(val):
     m = CATEGORY_META[get_productivity_category(val)]
     return f"color:{m['ink']};font-weight:700"
-
 
 def matrix_cell_style(val):
     if isinstance(val, str):
@@ -517,14 +460,9 @@ def matrix_cell_style(val):
         return ''
     return cat_cell_style(get_productivity_category(val))
 
-
-# =============================================================================
-#  WHATSAPP BROADCAST ENGINE
-# =============================================================================
 def wa_sorted(df, cat):
-    asc = cat != "Good"  # non-Good: terburuk dulu | Good: terbaik dulu
+    asc = cat != "Good"
     return df.sort_values(['Ratio', 'Total Tiket', 'Nama PIC'], ascending=[asc, asc, True])
-
 
 def wa_header(nops_display, d_start, d_end, waktu_str, target_days):
     return (
@@ -536,16 +474,14 @@ def wa_header(nops_display, d_start, d_end, waktu_str, target_days):
         f"{WA_LINE}\n\n"
     )
 
-
 def wa_name(row, tag):
     nm = str(row['Nama PIC'])
     return "@" + nm.replace(' ', '') if tag else nm
 
-
 def wa_entry(i, row, cat, opts, target_days):
     m = CATEGORY_META[cat]
     total = int(row['Total Tiket'])
-    nop_part = "" if opts.get('group_nop') else f" — *{row['NOP']}*"  # pada mode Per NOP, NOP sudah jadi judul grup
+    nop_part = "" if opts.get('group_nop') else f" — *{row['NOP']}*"
     t = f"{i}. {m['emoji']} {wa_name(row, opts['tag'])}{nop_part}\n"
     if cat == "Good":
         surplus = max(total - target_days, 0)
@@ -557,19 +493,15 @@ def wa_entry(i, row, cat, opts, target_days):
         t += "   └ " + " | ".join(f"{c}:{int(row[c])}" for c in SOURCE_COLS) + "\n"
     return t + "\n"
 
-
 def wa_section_blocks(df_cat, cat, opts, target_days, lead_divider=False):
-    """Pecah satu kategori menjadi blok-blok teks (judul menempel pada entri pertama)."""
     m = CATEGORY_META[cat]
     pending = (f"{WA_LINE}\n" if lead_divider else "")
     pending += f"{m['wa_title']}\n_{m['wa_note']}_\n*Jumlah: {len(df_cat)} PIC*\n\n"
     blocks, idx = [], 0
-
     def add(entry):
         nonlocal pending
         blocks.append(pending + entry)
         pending = ""
-
     if opts['group_nop']:
         for nop, g in df_cat.groupby('NOP', sort=True):
             pending += f"📍 *{nop}* ({len(g)} PIC)\n"
@@ -582,9 +514,7 @@ def wa_section_blocks(df_cat, cat, opts, target_days, lead_divider=False):
             add(wa_entry(idx, row, cat, opts, target_days))
     return blocks
 
-
 def wa_paginate(header, blocks, footer=WA_FOOTER, max_chars=WA_MAX_CHARS):
-    """Susun blok menjadi satu/lebih pesan agar nyaman dibaca di WhatsApp."""
     cont = "📊 *DAILY PRODUCTIVITY REPORT* (lanjutan)\n" + WA_LINE + "\n\n"
     pages, cur, has_body = [], header, False
     for b in blocks:
@@ -592,7 +522,7 @@ def wa_paginate(header, blocks, footer=WA_FOOTER, max_chars=WA_MAX_CHARS):
             pages.append(cur.rstrip() + "\n\n_… bersambung ke pesan berikutnya_\n")
             cur, has_body = cont, False
         if not has_body and b.startswith(WA_LINE + "\n"):
-            b = b[len(WA_LINE) + 1:]  # hindari garis pembatas ganda di awal halaman
+            b = b[len(WA_LINE) + 1:]
         cur += b
         has_body = True
     cur += f"{WA_LINE}\n{footer}"
@@ -602,12 +532,10 @@ def wa_paginate(header, blocks, footer=WA_FOOTER, max_chars=WA_MAX_CHARS):
         pages = [p.replace("\n", f"\n_Bagian {i} dari {n}_\n", 1) for i, p in enumerate(pages, 1)]
     return pages
 
-
 def build_wa_category(df, cat, opts, header, target_days):
     dfc = wa_sorted(df[df['Kategori Produktivitas'] == cat], cat)
     if dfc.empty: return []
     return wa_paginate(header, wa_section_blocks(dfc, cat, opts, target_days))
-
 
 def build_wa_executive(df, cats, opts, header, target_days):
     total = len(df)
@@ -637,7 +565,6 @@ def build_wa_executive(df, cats, opts, header, target_days):
                 blocks += wa_section_blocks(dfc, c, opts, target_days, lead_divider=True)
     return wa_paginate(header, blocks)
 
-
 def render_wa_pages(pages, key_prefix, file_stub):
     for i, page in enumerate(pages, 1):
         label = f"Pesan {i} dari {len(pages)}" if len(pages) > 1 else "Pesan siap kirim"
@@ -649,14 +576,13 @@ def render_wa_pages(pages, key_prefix, file_stub):
             if hasattr(st, "link_button") and len(link) <= WA_LINK_LIMIT:
                 st.link_button("Buka di WhatsApp", link, **LINK_KW)
             else:
-                st.caption("Pesan terlalu panjang untuk tautan langsung. Gunakan ikon salin di pojok kotak teks.")
+                st.caption("Pesan terlalu panjang untuk tautan langsung.")
         with c2:
             st.download_button("Unduh sebagai .txt", data=page, file_name=f"{file_stub}_{i}.txt",
                                mime="text/plain", key=f"{key_prefix}_dl_{i}", **BTN_KW)
         with st.expander("Edit manual sebelum dikirim"):
             st.text_area("Teks pesan", value=page, height=320, label_visibility="collapsed",
                          key=f"{key_prefix}_edit_{i}_{zlib.crc32(page.encode('utf-8'))}")
-
 
 def cat_banner(cat, n, title=None, rule=None):
     if cat:
@@ -669,18 +595,13 @@ def cat_banner(cat, n, title=None, rule=None):
     render(f'<div class="cb" style="border-left-color:{color}">{pill}<b>{esc(title)}</b>'
            f'<span class="rule">{esc(rule)}</span><span class="cnt">{n} PIC</span></div>')
 
-
-def render_wa_tab(broadcast_all, has_data, n_sources, nops_display, d_start, d_end,
-                  target_days, waktu_str, excluded_count):
-    section_title("Generate Broadcast WhatsApp",
-                  "Template profesional, dipisah per kategori agar mudah dibaca tim. Remark URGENT untuk Zero & Very Poor, WARNING untuk Poor.")
+def render_wa_tab(broadcast_all, has_data, n_sources, nops_display, d_start, d_end, target_days, waktu_str, excluded_count):
+    section_title("Generate Broadcast WhatsApp", "Template profesional, dipisah per kategori agar mudah dibaca tim.")
     if not has_data:
-        note("warn", "<b>Belum ada data sumber.</b> Unggah minimal satu file pada panel kiri. "
-                     "Broadcast tidak dibuat selama belum ada data, agar seluruh PIC tidak salah terbaca sebagai Zero.")
+        note("warn", "<b>Belum ada data sumber.</b>")
         return
     if n_sources < 4:
-        note("warn", f"<b>Data belum lengkap ({n_sources} dari 4 sumber).</b> Rasio dapat lebih rendah dari kondisi sebenarnya. "
-                     "Pastikan seluruh file sudah diunggah sebelum broadcast dikirim.")
+        note("warn", f"<b>Data belum lengkap ({n_sources} dari 4 sumber).</b>")
     if broadcast_all.empty:
         note("info", "Tidak ada PIC yang dapat ditampilkan pada area terpilih.")
         return
@@ -694,24 +615,19 @@ def render_wa_tab(broadcast_all, has_data, n_sources, nops_display, d_start, d_e
             st.markdown("**Pengaturan pesan**")
             opt_tag = st.toggle("Tag nama PIC (@)", value=True, key="wa_opt_tag")
             opt_src = st.toggle("Rincian sumber tiket", value=True, key="wa_opt_src")
-            opt_top3 = st.toggle("Top 3 prioritas pada ringkasan", value=True, key="wa_opt_top3")
+            opt_top3 = st.toggle("Top 3 prioritas", value=True, key="wa_opt_top3")
             opt_sort = st.radio("Susun daftar PIC", ["Terendah dulu", "Per NOP"], key="wa_opt_sort")
             exec_cats = st.multiselect("Kategori pada Ringkasan Eksekutif", options=CATEGORY_ORDER,
                                        default=["Zero", "Very Poor", "Poor"], key="wa_opt_cats")
-            st.caption("Setiap tab di kanan menghasilkan pesan terpisah per kategori. "
-                       "Pesan panjang otomatis dibagi menjadi beberapa bagian.")
             if excluded_count:
-                st.caption(f"{excluded_count} PIC dikecualikan dari broadcast sesuai kebijakan.")
+                st.caption(f"{excluded_count} PIC dikecualikan dari broadcast.")
 
     opts = dict(tag=opt_tag, src=opt_src, top3=opt_top3, group_nop=(opt_sort == "Per NOP"))
-
     with view:
         labels = ["Ringkasan Eksekutif"] + [f"{CATEGORY_META[c]['emoji']} {c} ({counts[c]})" for c in CATEGORY_ORDER]
         subtabs = st.tabs(labels)
-
         with subtabs[0]:
-            cat_banner(None, len(broadcast_all), title="Ringkasan Eksekutif",
-                       rule="Gabungan kategori terpilih, urutan dari yang paling kritis")
+            cat_banner(None, len(broadcast_all), title="Ringkasan Eksekutif", rule="Gabungan kategori terpilih")
             pages = build_wa_executive(broadcast_all, exec_cats, opts, header, target_days)
             render_wa_pages(pages, "wa_exec", "WA_Ringkasan")
 
@@ -719,29 +635,20 @@ def render_wa_tab(broadcast_all, has_data, n_sources, nops_display, d_start, d_e
             with subtabs[k]:
                 cat_banner(c, counts[c])
                 if counts[c] == 0:
-                    if c == "Good":
-                        note("info", "Belum ada PIC yang mencapai kategori Good pada periode ini.")
-                    else:
-                        note("ok", f"Tidak ada PIC berstatus <b>{c}</b> pada periode ini.")
+                    note("info", f"Tidak ada PIC {c}.")
                 else:
                     pages = build_wa_category(broadcast_all, c, opts, header, target_days)
                     render_wa_pages(pages, f"wa_{CATEGORY_META[c]['slug']}", f"WA_{c.replace(' ', '')}")
 
-
-# =============================================================================
-#  EXPORT EXCEL
-# =============================================================================
 def build_excel(sheets):
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
         wb = writer.book
         hdr = wb.add_format({'bold': True, 'font_color': '#FFFFFF', 'bg_color': '#0B1F3A',
                              'valign': 'vcenter', 'border': 1, 'border_color': '#DDE3EC'})
-        fmts = {c: wb.add_format({'bg_color': CATEGORY_META[c]['soft'], 'font_color': CATEGORY_META[c]['ink'], 'bold': True})
-                for c in CATEGORY_ORDER}
+        fmts = {c: wb.add_format({'bg_color': CATEGORY_META[c]['soft'], 'font_color': CATEGORY_META[c]['ink'], 'bold': True}) for c in CATEGORY_ORDER}
         text_map = {'Zero': 'Zero', 'Very Poor': 'Very Poor', 'Poor': 'Poor', 'Good': 'Good',
                     'URGENT': 'Zero', 'WARNING': 'Poor', 'ON TRACK': 'Good', 'Bad': 'Zero'}
-
         for name, df, is_matrix in sheets:
             df.to_excel(writer, index=False, sheet_name=name)
             ws = writer.sheets[name]
@@ -758,32 +665,23 @@ def build_excel(sheets):
                 ws.set_column(j, j, min(max(len(str(col)), mx) + 3, 42))
                 if n and col in ('Kategori Produktivitas', 'Remark'):
                     for val, cat in text_map.items():
-                        ws.conditional_format(1, j, n, j, {'type': 'cell', 'criteria': '==',
-                                                           'value': f'"{val}"', 'format': fmts[cat]})
+                        ws.conditional_format(1, j, n, j, {'type': 'cell', 'criteria': '==', 'value': f'"{val}"', 'format': fmts[cat]})
                 if n and is_matrix and col not in ('Nama PIC', 'Remark'):
                     rules = [('>=', 1, None, 'Good'), ('between', 0.2, 0.999999, 'Poor'),
                              ('between', 0.000001, 0.199999, 'Very Poor'), ('==', 0, None, 'Zero')]
                     for crit, v1, v2, cat in rules:
                         cfg = {'type': 'cell', 'criteria': crit, 'format': fmts[cat]}
-                        if crit == 'between':
-                            cfg.update({'minimum': v1, 'maximum': v2})
-                        else:
-                            cfg['value'] = v1
+                        if crit == 'between': cfg.update({'minimum': v1, 'maximum': v2})
+                        else: cfg['value'] = v1
                         ws.conditional_format(1, j, n, j, cfg)
-            if n:
-                ws.autofilter(0, 0, n, len(df.columns) - 1)
+            if n: ws.autofilter(0, 0, n, len(df.columns) - 1)
     return out.getvalue()
 
-
-# =============================================================================
-#  BACA MASTER NAMA PIC & NOP (OTOMATIS DARI GITHUB) - LOGIKA ASLI
-# =============================================================================
 master_pic_df = pd.DataFrame(columns=['Nama PIC', 'NOP'])
 file_master_name = "nama pic_2.xlsx"
 excluded_from_all = ['okta pradika', 'harminto', 'armadi', 'muhamad rayhan']
-master_notices = []  # (jenis, pesan) ditampilkan rapi setelah header
+master_notices = []
 
-# Pengecekan file secara case-insensitive agar lebih aman di Streamlit Cloud
 actual_master_file = None
 for f in os.listdir():
     if f.lower() == file_master_name.lower():
@@ -793,69 +691,50 @@ for f in os.listdir():
 if actual_master_file:
     try:
         df_master_pic = pd.read_excel(actual_master_file)
-
-        # Asumsi cerdas pencarian kolom Nama & NOP
         name_col = df_master_pic.columns[0]
         for col in df_master_pic.columns:
             if 'nama' in str(col).lower() or 'pic' in str(col).lower():
                 name_col = col
                 break
-
         nop_col = df_master_pic.columns[1] if len(df_master_pic.columns) > 1 else None
         for col in df_master_pic.columns:
             if 'nop' in str(col).lower():
                 nop_col = col
                 break
-
-        # Hilangkan baris yang namanya kosong
         df_master_pic = df_master_pic.dropna(subset=[name_col])
         master_pic_df['Nama PIC'] = df_master_pic[name_col].apply(normalize_name)
-
-        # Merapikan format NOP
         if nop_col is not None:
             def format_nop(x):
                 x = str(x).strip()
                 if x.lower() in ['nan', '', 'none', 'nat']: return 'Tidak Terdeteksi'
-                if not x.lower().startswith('nop'):
-                    return 'NOP ' + x.title()
+                if not x.lower().startswith('nop'): return 'NOP ' + x.title()
                 return 'NOP ' + x[4:].strip().title()
             master_pic_df['NOP'] = df_master_pic[nop_col].apply(format_nop)
         else:
             master_pic_df['NOP'] = 'Tidak Terdeteksi'
-
-        # Hapus nama tertentu secara mutlak dan bersihkan duplikat
         master_pic_df = master_pic_df[~master_pic_df['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_all))]
         master_pic_df = master_pic_df.drop_duplicates(subset=['Nama PIC'])
     except Exception as e:
         master_notices.append(("warn", f"Gagal memproses file <b>{esc(file_master_name)}</b>: {esc(e)}"))
 else:
-    master_notices.append(("crit", f"File <b>{esc(file_master_name)}</b> tidak ditemukan di sistem. "
-                                   "Periksa nama file di GitHub (perhatikan huruf besar/kecilnya)."))
+    master_notices.append(("crit", f"File <b>{esc(file_master_name)}</b> tidak ditemukan di sistem."))
 
-# =============================================================================
-#  LAYOUT UTAMA
-# =============================================================================
-hero_slot = st.container()     # diisi setelah parameter sidebar diketahui
+hero_slot = st.container()
 notice_slot = st.container()
 
-# --- SIDEBAR ---
 with st.sidebar:
-    render('<div class="sb-title" style="margin-top:4px">Sumber Data</div>'
-           '<div class="sb-hint">Unggah 4 file utama dalam format Excel.</div>')
-    render(f'<div class="sb-ref">Referensi baku <b>{esc(file_master_name)}</b> aktif memfilter NOP &amp; PIC.</div>')
-
+    render('<div class="sb-title" style="margin-top:4px">Sumber Data</div><div class="sb-hint">Unggah 4 file utama format Excel.</div>')
+    render(f'<div class="sb-ref">Referensi baku <b>{esc(file_master_name)}</b> aktif.</div>')
     file_swfm = st.file_uploader("1. Ticket_SWFM (TS & BPS)", type=['xlsx', 'xls'])
     file_pms = st.file_uploader("2. PM Site", type=['xlsx', 'xls'])
     file_pmg = st.file_uploader("3. PM Genset", type=['xlsx', 'xls'])
     file_fna = st.file_uploader("4. Export List Ticket Field Operation (FNA)", type=['xlsx', 'xls'])
     readiness_slot = st.container()
-
     render('<div class="sb-title">Rentang Waktu</div>')
     wib_now = datetime.now(WIB)
     today = wib_now.date()
     first_day = today.replace(day=1)
     date_range = st.date_input("Rentang Waktu Tiket", value=(first_day, today))
-
     date_incomplete = False
     if isinstance(date_range, (tuple, list)) and len(date_range) == 2:
         d_start, d_end = date_range
@@ -863,13 +742,10 @@ with st.sidebar:
         d_start = d_end = date_range[0] if isinstance(date_range, (tuple, list)) and len(date_range) else date_range
         date_incomplete = True
     target_days = (d_end - d_start).days + 1
-
     if date_incomplete:
-        st.warning("Pilih tanggal akhir untuk melengkapi rentang waktu.")
-    render(f'<div class="tgt">Target hari evaluasi: <b>{target_days} hari</b><br>'
-           f'Rasio aman ≥ 1.0 berarti minimal {target_days} tiket per PIC.</div>')
+        st.warning("Pilih tanggal akhir.")
+    render(f'<div class="tgt">Target hari evaluasi: <b>{target_days} hari</b><br>Rasio aman ≥ 1.0 berarti minimal {target_days} tiket per PIC.</div>')
 
-# --- PROSES PENGGABUNGAN RAW DATA ---
 src_frames = {}
 if file_swfm: src_frames['Ticket SWFM (TS & BPS)'] = process_swfm_file(file_swfm.getvalue())
 if file_pms: src_frames['PM Site'] = process_pms_file(file_pms.getvalue())
@@ -884,12 +760,9 @@ with readiness_slot:
     rows = ""
     for label in ['Ticket SWFM (TS & BPS)', 'PM Site', 'PM Genset', 'Export List Ticket (FNA)']:
         d = src_frames.get(label)
-        if d is None:
-            rows += f'<div class="rd"><i></i><span>{label}</span><em>Belum diunggah</em></div>'
-        elif d.empty:
-            rows += f'<div class="rd"><i class="warn"></i><span>{label}</span><em>0 baris valid</em></div>'
-        else:
-            rows += f'<div class="rd"><i class="on"></i><span>{label}</span><em>{len(d):,} baris valid</em></div>'
+        if d is None: rows += f'<div class="rd"><i></i><span>{label}</span><em>Belum diunggah</em></div>'
+        elif d.empty: rows += f'<div class="rd"><i class="warn"></i><span>{label}</span><em>0 baris valid</em></div>'
+        else: rows += f'<div class="rd"><i class="on"></i><span>{label}</span><em>{len(d):,} baris valid</em></div>'
     render(f'<div class="sb-title">Kesiapan Data</div>{rows}')
 
 if not has_data:
@@ -900,14 +773,55 @@ else:
     df_raw['Tanggal Utama'] = pd.to_datetime(df_raw['Tanggal Utama'], errors='coerce')
     df_raw = df_raw.dropna(subset=['Nama PIC'])
     df_raw['Nama PIC'] = df_raw['Nama PIC'].apply(normalize_name)
+    df_raw['Nama Asli Tarikan'] = df_raw['Nama PIC']  # Backup nama asli untuk fitur log
 
-    # Penggabungan NOP berdasarkan Master PIC & Mengabaikan PIC yang tidak terdaftar
+    # === FITUR TRACKING & VALIDASI NAMA (AUTO-MAP & MANUAL OVERRIDE) ===
     if not master_pic_df.empty:
+        valid_master_names = master_pic_df['Nama PIC'].tolist()
+        raw_names_unique = df_raw['Nama PIC'].unique()
+        
+        unmatched_names = [n for n in raw_names_unique if n not in valid_master_names]
+        
+        if 'name_overrides' not in st.session_state:
+            st.session_state['name_overrides'] = {}
+            
+        mapping_data = []
+        for un in unmatched_names:
+            if un in st.session_state['name_overrides']:
+                mapped = st.session_state['name_overrides'][un]
+                status = "Manual Edit"
+            else:
+                matches = difflib.get_close_matches(un, valid_master_names, n=1, cutoff=0.7)
+                mapped = matches[0] if matches else None
+                if not mapped:
+                    un_first = un.split()[0].lower()
+                    for vmn in valid_master_names:
+                        if vmn.split()[0].lower() == un_first:
+                            mapped = vmn
+                            break
+                status = "Auto-Mapped" if mapped else "Unmapped"
+            
+            mapping_data.append({
+                "Nama Tarikan (Asli)": un,
+                "Nama di Master Data": mapped if mapped else None,
+                "Status": status
+            })
+            
+        st.session_state['mapping_df'] = pd.DataFrame(mapping_data)
+        
+        apply_map = {}
+        if mapping_data:
+            for row in mapping_data:
+                if row['Nama di Master Data']:
+                    apply_map[row['Nama Tarikan (Asli)']] = row['Nama di Master Data']
+                    
+        if apply_map:
+            df_raw['Nama PIC'] = df_raw['Nama PIC'].replace(apply_map)
+
         df_raw = pd.merge(df_raw, master_pic_df[['Nama PIC', 'NOP']], on='Nama PIC', how='inner')
     else:
         df_raw['NOP'] = 'Tidak Terdeteksi'
 
-# --- FILTER MULTIPEL NOP DI SIDEBAR ---
 selected_nops = []
 available_nops = []
 if not master_pic_df.empty:
@@ -915,35 +829,28 @@ if not master_pic_df.empty:
         render('<div class="sb-title">Filter Area (NOP)</div>')
         available_nops = sorted(master_pic_df['NOP'].unique())
         selected_nops = st.multiselect("Pilih NOP yang ingin ditampilkan", options=available_nops, default=available_nops)
-
-        # Eksekusi Filter NOP ke Data Raw & Data Master PIC
         if selected_nops:
             df_raw = df_raw[df_raw['NOP'].isin(selected_nops)]
             master_pic_df = master_pic_df[master_pic_df['NOP'].isin(selected_nops)]
-
         render('<div class="sb-title">Filter Kategori</div>')
         kategori_options = ["Good", "Poor", "Very Poor", "Zero"]
-        kategori_filter = st.multiselect("Filter Kategori", options=kategori_options, default=kategori_options,
-                                         label_visibility="collapsed")
+        kategori_filter = st.multiselect("Filter Kategori", options=kategori_options, default=kategori_options, label_visibility="collapsed")
 else:
     kategori_filter = []
 
-# --- HEADER & NOTIFIKASI ---
 with hero_slot:
     render_hero(fmt_period(d_start, d_end), target_days, describe_nops(selected_nops, available_nops, 3), n_sources)
 with notice_slot:
     for kind, text in master_notices:
         note(kind, text)
 
-# --- TABS LAYOUT ---
-tab1, tab2, tab3, tab4 = st.tabs(["Analisa Rentang Waktu", "Matriks Performa Bulanan", "WA Broadcast", "Raw Data & Export"])
+# --- TABS LAYOUT TERBARU (TAB 5 DITAMBAHKAN) ---
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Analisa Rentang Waktu", "Matriks Performa Bulanan", "WA Broadcast", "Raw Data & Export", "Validasi Nama PIC"])
 
 matrix_display = pd.DataFrame()
 df_master = pd.DataFrame()
 
 if not df_raw.empty or (not master_pic_df.empty and selected_nops):
-
-    # === DATA PREP TAB 1 ===
     start_date = pd.to_datetime(d_start)
     end_date = pd.to_datetime(d_end).replace(hour=23, minute=59, second=59)
     df_filtered_date = df_raw[(df_raw['Tanggal Utama'] >= start_date) & (df_raw['Tanggal Utama'] <= end_date)]
@@ -959,7 +866,6 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
 
     breakdown = breakdown[['Nama PIC'] + SOURCE_COLS]
 
-    # JIKA FILE MASTER PIC ADA: Lakukan penggabungan agar yang tidak ada tiket menjadi 0
     if not master_pic_df.empty:
         breakdown = pd.merge(master_pic_df[['Nama PIC', 'NOP']], breakdown, on='Nama PIC', how='left').fillna(0)
     else:
@@ -968,8 +874,6 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
         if missing_pics:
             df_missing = pd.DataFrame({'Nama PIC': list(missing_pics), 'PMS': 0, 'PMG': 0, 'FNA': 0, 'BPS': 0, 'TS': 0})
             breakdown = pd.concat([breakdown, df_missing], ignore_index=True)
-
-        # [FIX] Pastikan kolom NOP tetap ada meski master file gagal dimuat
         if 'NOP' not in breakdown.columns:
             breakdown['NOP'] = 'Tidak Terdeteksi'
 
@@ -984,15 +888,10 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
     if kategori_filter:
         df_master = df_master[df_master['Kategori Produktivitas'].isin(kategori_filter)]
 
-    # === TAB 1: DASHBOARD UTAMA & RINCIAN PER PIC ===
     with tab1:
-        if not has_data:
-            note("warn", "<b>Belum ada data sumber.</b> Unggah file pada panel kiri. Selama belum ada data, "
-                         "seluruh PIC terdaftar ditampilkan sebagai Zero.")
-        elif n_sources < 4:
-            note("warn", f"<b>Data belum lengkap ({n_sources} dari 4 sumber).</b> Rasio dapat lebih rendah dari kondisi sebenarnya.")
+        if not has_data: note("warn", "<b>Belum ada data sumber.</b>")
+        elif n_sources < 4: note("warn", f"<b>Data belum lengkap ({n_sources} dari 4 sumber).</b>")
 
-        # Ringkasan manajemen dihitung dari seluruh PIC pada area terpilih (tidak terpengaruh Filter Kategori)
         total_pic = len(breakdown)
         total_tiket = int(breakdown['Total Tiket'].sum())
         counts_all = {c: int((breakdown['Kategori Produktivitas'] == c).sum()) for c in CATEGORY_ORDER}
@@ -1008,16 +907,14 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
         health_bar(counts_all, total_pic)
 
         insight = build_insight(breakdown, target_days)
-        if insight and has_data:
-            note(insight[0], "<b>Ringkasan eksekutif.</b> " + insight[1])
+        if insight and has_data: note(insight[0], "<b>Ringkasan eksekutif.</b> " + insight[1])
 
         if not master_pic_df.empty:
-            st.caption("Master mapping aktif: PIC tidak terdaftar diabaikan, data area distandarkan, dan PIC dengan 0 tiket tetap terlacak.")
+            st.caption("Master mapping aktif & Auto-Validasi Nama PIC bekerja di latar belakang (cek Tab Validasi).")
 
-        section_title(f"Rincian Perolehan Tiket per PIC (Target: {target_days} Hari)",
-                      "Diurutkan dari rasio terendah. Klik judul kolom untuk mengurutkan ulang.")
+        section_title(f"Rincian Perolehan Tiket per PIC (Target: {target_days} Hari)")
         if df_master.empty:
-            note("info", "Tidak ada PIC pada kategori yang dipilih. Ubah Filter Kategori pada panel kiri.")
+            note("info", "Tidak ada PIC pada kategori yang dipilih.")
         else:
             table_cols = ['Nama PIC', 'NOP'] + SOURCE_COLS + ['Total Tiket', 'Ratio', 'Sisa Target', 'Kategori Produktivitas', 'Remark']
             fmt = {c: '{:.0f}' for c in SOURCE_COLS + ['Total Tiket', 'Sisa Target']}
@@ -1028,14 +925,11 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
             tbl = style_cells(tbl, ratio_cell_style, subset=['Ratio'])
             show_df(tbl, hide_index=True)
 
-            section_title("Visualisasi Performa", "Komposisi sumber tiket dan posisi rasio setiap PIC terhadap target.")
             col_chart1, col_chart2 = st.columns(2)
             with col_chart1:
                 with panel():
                     fig_bar = px.bar(df_master.sort_values('Total Tiket', ascending=False), x='Nama PIC', y=SOURCE_COLS,
-                                     title="Komposisi Perolehan Tiket per PIC",
-                                     labels={'value': 'Jumlah Tiket', 'variable': 'Kategori Source'},
-                                     color_discrete_map=SOURCE_COLORS)
+                                     title="Komposisi Perolehan Tiket per PIC", color_discrete_map=SOURCE_COLORS)
                     show_chart(style_fig(fig_bar))
             with col_chart2:
                 with panel():
@@ -1043,13 +937,12 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
                                        color='Kategori Produktivitas',
                                        color_discrete_map={c: CATEGORY_META[c]['color'] for c in CATEGORY_ORDER},
                                        category_orders={'Kategori Produktivitas': CATEGORY_ORDER},
-                                       title="Rasio Produktivitas (Total Tiket / Target Hari)")
-                    fig_ratio.add_hline(y=1.0, line_dash="dash", annotation_text="Target Rasio 1.0", line_color="#1E4FB5")
+                                       title="Rasio Produktivitas")
+                    fig_ratio.add_hline(y=1.0, line_dash="dash")
                     show_chart(style_fig(fig_ratio))
 
-        # --- Ringkasan per NOP (hanya relevan bila > 1 area) ---
         if breakdown['NOP'].nunique() > 1:
-            section_title("Perbandingan Antar Area (NOP)", "Sebaran status per area untuk menentukan prioritas pembinaan.")
+            section_title("Perbandingan Antar Area (NOP)")
             cat_counts = pd.crosstab(breakdown['NOP'], breakdown['Kategori Produktivitas']).reindex(columns=CATEGORY_ORDER, fill_value=0)
             nop_tbl = cat_counts.copy()
             nop_tbl.insert(0, 'Total PIC', breakdown.groupby('NOP').size())
@@ -1068,50 +961,23 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
                     nop_long = cat_counts.reset_index().melt(id_vars='NOP', var_name='Kategori', value_name='Jumlah PIC')
                     fig_nop = px.bar(nop_long, y='NOP', x='Jumlah PIC', color='Kategori', orientation='h',
                                      color_discrete_map={c: CATEGORY_META[c]['color'] for c in CATEGORY_ORDER},
-                                     category_orders={'Kategori': CATEGORY_ORDER},
-                                     title="Distribusi Status per NOP")
+                                     category_orders={'Kategori': CATEGORY_ORDER})
                     show_chart(style_fig(fig_nop, height=max(300, 60 * breakdown['NOP'].nunique() + 120), rotate=False))
 
-        # --- Metodologi (penalaran penilaian) ---
-        with st.expander("Metodologi penilaian & aturan remark"):
-            rule_rows = "".join(
-                f'<tr><td><span class="chip {CATEGORY_META[c]["slug"]}">{c}</span></td><td>{CATEGORY_META[c]["rule"]}</td>'
-                f'<td><span class="chip {CATEGORY_META[c]["slug"]}">{CATEGORY_META[c]["remark"]}</span></td></tr>'
-                for c in ["Good", "Poor", "Very Poor", "Zero"]
-            )
-            render(f"""
-            <table class="rt"><thead><tr><th>Kategori</th><th>Ambang rasio</th><th>Remark pada broadcast</th></tr></thead>
-            <tbody>{rule_rows}</tbody></table>
-            """)
-            st.markdown(
-                f"- **Rasio** = Total Tiket ÷ Target Hari. Target hari saat ini **{target_days} hari** "
-                f"(tanggal akhir − tanggal awal + 1).\n"
-                "- **Ticket SWFM (TS & BPS):** dihitung hanya jika kolom *Check In At* (AK) terisi.\n"
-                "- **PM Site & PM Genset:** status *waiting approval amesty*, *submitted*, atau *closed*.\n"
-                "- **FNA:** hanya status *closed*.\n"
-                "- **Sisa Target** = jumlah tiket yang masih kurang agar mencapai rasio 1.0."
-            )
-
-    # === TAB 2: MATRIKS PERFORMA BULANAN (FLEKSIBEL) ===
     with tab2:
-        section_title("Matriks Rasio Produktivitas Bulanan",
-                      "Rasio bulanan = jumlah tiket ÷ jumlah hari pada bulan tersebut. Gunakan untuk melihat konsistensi, bukan hanya satu periode.")
-
+        section_title("Matriks Rasio Produktivitas Bulanan")
         df_matrix_raw = df_raw.dropna(subset=['Tanggal Utama']).copy()
         df_matrix_raw['Bulan_Sort'] = df_matrix_raw['Tanggal Utama'].dt.to_period('M')
         df_matrix_raw['DaysInMonth'] = df_matrix_raw['Tanggal Utama'].dt.daysinmonth
-
         monthly_tickets = df_matrix_raw.groupby(['Nama PIC', 'Bulan_Sort', 'DaysInMonth']).size().reset_index(name='Tickets')
 
         if monthly_tickets.empty:
-            note("info", "Belum ada tiket bertanggal pada data yang diunggah, sehingga matriks bulanan belum dapat dibuat.")
+            note("info", "Belum ada tiket bertanggal pada data.")
         else:
             monthly_tickets['Ratio'] = monthly_tickets['Tickets'] / monthly_tickets['DaysInMonth']
-
             matrix_pivot = monthly_tickets.pivot(index='Nama PIC', columns='Bulan_Sort', values='Ratio').fillna(0)
             available_months = sorted(matrix_pivot.columns)
 
-            # Tambahkan PIC yang ada di master tapi belum ada tiket sama sekali ke matriks
             if not master_pic_df.empty:
                 missing_matrix = [p for p in master_pic_df['Nama PIC'] if p not in matrix_pivot.index]
                 if missing_matrix:
@@ -1119,23 +985,19 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
             matrix_pivot.index.name = 'Nama PIC'
 
             col_m1, col_m2 = st.columns(2)
-            selected_months = col_m1.multiselect("Pilih Bulan yang Ingin Ditampilkan", options=available_months,
+            selected_months = col_m1.multiselect("Pilih Bulan", options=available_months,
                                                  default=available_months[-4:] if len(available_months) >= 4 else available_months,
                                                  format_func=lambda x: x.strftime('%B %Y'))
-
             all_matrix_pics = sorted(matrix_pivot.index.tolist())
-            selected_matrix_pics = col_m2.multiselect("Filter Nama PIC pada Matriks (Kosong = Tampil Semua)", options=all_matrix_pics, default=[])
+            selected_matrix_pics = col_m2.multiselect("Filter Nama PIC", options=all_matrix_pics, default=[])
 
             if selected_months:
                 matrix_display = matrix_pivot[selected_months].copy()
                 threshold_good = 3 if len(selected_months) == 4 else (len(selected_months) - 1 if len(selected_months) > 1 else 1)
-
                 def calculate_remark(row):
                     good_months = sum(row >= 1.0)
                     return "Good" if good_months >= threshold_good else "Bad"
-
                 matrix_display['Remark'] = matrix_display.apply(calculate_remark, axis=1)
-
                 rename_cols = {col: col.strftime('%b-%y') for col in selected_months}
                 matrix_display = matrix_display.rename(columns=rename_cols)
                 month_str_cols = list(rename_cols.values())
@@ -1148,21 +1010,12 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
                 kpi_strip([
                     ("PIC pada matriks", f"{len(matrix_display):,}", f"{len(selected_months)} bulan dipilih"),
                     ("Remark Good", f"{n_good_pic:,}", f"Rasio ≥ 1.0 minimal {threshold_good} dari {len(selected_months)} bulan"),
-                    ("Remark Bad", f"{n_bad_pic:,}", "Belum konsisten mencapai target"),
-                    ("Konsistensi", f"{(n_good_pic / len(matrix_display) * 100 if len(matrix_display) else 0):.0f}%", "Porsi PIC berremark Good"),
+                    ("Remark Bad", f"{n_bad_pic:,}", "Belum konsisten"),
                 ])
-                render('<div class="legend">'
-                       '<span class="chip good">Good ≥ 1.00</span><span class="chip poor">Poor 0.20 – 0.99</span>'
-                       '<span class="chip vpoor">Very Poor 0.01 – 0.19</span><span class="chip zero">Zero 0.00</span></div>')
-
                 matrix_style = style_cells(matrix_display.style.format({col: "{:.2f}" for col in month_str_cols}), matrix_cell_style)
                 show_df(matrix_style)
-            else:
-                note("info", "Silakan pilih minimal 1 bulan pada filter di atas.")
 
-    # === TAB 3: WA BROADCAST (INTERAKTIF PER KATEGORI) ===
     with tab3:
-        # Pengecualian nama HANYA DARI TAMPILAN BROADCAST WA
         excluded_from_wa = ['darli', 'indra', 'riko setiadi', 'riki hidayat']
         broadcast_df = breakdown[~breakdown['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_wa))]
         render_wa_tab(
@@ -1173,32 +1026,23 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
             excluded_count=len(breakdown) - len(broadcast_df),
         )
 
-    # === TAB 4: RAW DATA & EXPORT ===
     with tab4:
-        section_title("Master Database Gabungan",
-                      "Semua data berhasil digabungkan lengkap dengan rincian kategori sumber tiket (telah difilter mengikuti nama baku).")
-
-        if df_raw.empty:
-            note("info", "Belum ada data tiket. Unggah file sumber pada panel kiri untuk melihat database gabungan.")
-
+        section_title("Master Database Gabungan")
         col_f1, col_f2 = st.columns(2)
         filter_source = col_f1.multiselect("Filter Sumber Kategori", options=df_raw['Source'].unique(), default=df_raw['Source'].unique())
         filter_nama = col_f2.text_input("Cari Nama PIC di Database")
 
         df_export = df_raw.copy()
-
         if filter_source:
             df_export = df_export[df_export['Source'].isin(filter_source)]
         if filter_nama:
             df_export = df_export[df_export['Nama PIC'].str.contains(filter_nama, case=False, na=False)]
-
         df_export['Tanggal Utama'] = pd.to_datetime(df_export['Tanggal Utama'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S')
 
         kpi_strip([
             ("Baris data", f"{len(df_export):,}", "Sesuai filter aktif"),
             ("PIC unik", f"{df_export['Nama PIC'].nunique():,}", "Pada data tampil"),
             ("Sumber aktif", f"{df_export['Source'].nunique()}", "Dari PMS, PMG, FNA, BPS, TS"),
-            ("Sumber diunggah", f"{n_sources} / 4", "File pada panel kiri"),
         ])
         show_df(df_export)
 
@@ -1209,7 +1053,6 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
             md = matrix_display.reset_index()
             md.columns = ['Nama PIC'] + list(md.columns[1:])
             sheets.append(("Matriks Bulanan", md, True))
-
         st.download_button(
             label="Download Master Database ke Excel (.xlsx)",
             data=build_excel(sheets),
@@ -1217,8 +1060,55 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
+    # === TAB 5: VALIDASI NAMA PIC ===
+    with tab5:
+        section_title("Tracking & Validasi Nama PIC", "Sesuaikan jika terdapat nama ditarikan tiket yang sedikit berbeda dengan Master Data.")
+        if 'mapping_df' in st.session_state and not st.session_state['mapping_df'].empty:
+            note("warn", "Ditemukan nama pada tiket yang tidak sama persis dengan Master Data. Sistem telah mencoba mencocokkan otomatis (Auto-Mapped). "
+                         "Anda dapat mengedit kolom <b>Nama di Master Data</b> secara manual di tabel bawah jika hasil otomatis kurang tepat.")
+            
+            master_choices = [""] + sorted(master_pic_df['Nama PIC'].unique().tolist())
+            
+            edited_df = st.data_editor(
+                st.session_state['mapping_df'],
+                column_config={
+                    "Nama Tarikan (Asli)": st.column_config.TextColumn("Nama Tarikan (Asli)", disabled=True),
+                    "Nama di Master Data": st.column_config.SelectboxColumn(
+                        "Nama di Master Data",
+                        help="Pilih nama yang benar sesuai list master",
+                        options=master_choices,
+                        required=False
+                    ),
+                    "Status": st.column_config.TextColumn("Status", disabled=True)
+                },
+                use_container_width=True,
+                key="editor_mapping",
+                num_rows="fixed"
+            )
+            
+            if st.button("Simpan Perubahan & Update Data", type="primary"):
+                has_changes = False
+                for idx, row in edited_df.iterrows():
+                    orig = row['Nama Tarikan (Asli)']
+                    new_val = row['Nama di Master Data']
+                    if pd.notna(new_val) and str(new_val).strip() != "":
+                        if orig not in st.session_state['name_overrides'] or st.session_state['name_overrides'].get(orig) != new_val:
+                            st.session_state['name_overrides'][orig] = new_val
+                            has_changes = True
+                    else:
+                        if orig in st.session_state['name_overrides']:
+                            del st.session_state['name_overrides'][orig]
+                            has_changes = True
+                            
+                if has_changes:
+                    st.success("Perubahan mapping nama berhasil disimpan! Sedang memperbarui dashboard...")
+                    st.rerun()
+                else:
+                    st.info("Tidak ada perubahan baru untuk disimpan.")
+        else:
+            note("ok", "Luar biasa! Seluruh nama PIC dari data tarikan tiket sudah cocok 100% dengan nama di file Master.")
+
 else:
-    for t in (tab1, tab2, tab3, tab4):
+    for t in (tab1, tab2, tab3, tab4, tab5):
         with t:
-            note("info", "<b>Belum ada data untuk ditampilkan.</b> Unggah file sumber pada panel kiri dan pastikan "
-                         "file master PIC serta filter NOP sudah sesuai.")
+            note("info", "<b>Belum ada data untuk ditampilkan.</b> Unggah file sumber pada panel kiri.")
