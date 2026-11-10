@@ -713,7 +713,8 @@ if actual_master_file:
         else:
             master_pic_df['NOP'] = 'Tidak Terdeteksi'
         master_pic_df = master_pic_df[~master_pic_df['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_all))]
-        master_pic_df = master_pic_df.drop_duplicates(subset=['Nama PIC'])
+        # GABUNGKAN NOP JIKA 1 PIC PUNYA BANYAK NOP (MENCEGAH NOP LAIN HILANG KARENA DROP DUPLICATES)
+        master_pic_df = master_pic_df.groupby('Nama PIC')['NOP'].apply(lambda x: ' & '.join(sorted(set(x)))).reset_index()
     except Exception as e:
         master_notices.append(("warn", f"Gagal memproses file <b>{esc(file_master_name)}</b>: {esc(e)}"))
 else:
@@ -729,6 +730,7 @@ with st.sidebar:
     file_pms = st.file_uploader("2. PM Site", type=['xlsx', 'xls'])
     file_pmg = st.file_uploader("3. PM Genset", type=['xlsx', 'xls'])
     file_fna = st.file_uploader("4. Export List Ticket Field Operation (FNA)", type=['xlsx', 'xls'])
+    file_combat = st.file_uploader("5. Data Site Combat/Tower (Inspeksi Khusus)", type=['xlsx', 'xls'])
     readiness_slot = st.container()
     render('<div class="sb-title">Rentang Waktu</div>')
     wib_now = datetime.now(WIB)
@@ -827,11 +829,21 @@ available_nops = []
 if not master_pic_df.empty:
     with st.sidebar:
         render('<div class="sb-title">Filter Area (NOP)</div>')
-        available_nops = sorted(master_pic_df['NOP'].unique())
+        # Ekstrak NOP individual untuk pilihan di filter
+        all_nops = set()
+        for nop_str in master_pic_df['NOP']:
+            for n in nop_str.split(' & '):
+                all_nops.add(n.strip())
+        available_nops = sorted(list(all_nops))
+        
         selected_nops = st.multiselect("Pilih NOP yang ingin ditampilkan", options=available_nops, default=available_nops)
         if selected_nops:
-            df_raw = df_raw[df_raw['NOP'].isin(selected_nops)]
-            master_pic_df = master_pic_df[master_pic_df['NOP'].isin(selected_nops)]
+            # Gunakan regex atau pengecekan string untuk memfilter NOP gabungan
+            mask_master = master_pic_df['NOP'].apply(lambda x: any(n in x for n in selected_nops))
+            master_pic_df = master_pic_df[mask_master]
+            
+            mask_raw = df_raw['NOP'].apply(lambda x: any(n in x for n in selected_nops))
+            df_raw = df_raw[mask_raw]
         render('<div class="sb-title">Filter Kategori</div>')
         kategori_options = ["Good", "Poor", "Very Poor", "Zero"]
         kategori_filter = st.multiselect("Filter Kategori", options=kategori_options, default=kategori_options, label_visibility="collapsed")
@@ -844,8 +856,8 @@ with notice_slot:
     for kind, text in master_notices:
         note(kind, text)
 
-# --- TABS LAYOUT TERBARU (TAB 5 DITAMBAHKAN) ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["Analisa Rentang Waktu", "Matriks Performa Bulanan", "WA Broadcast", "Raw Data & Export", "Validasi Nama PIC"])
+# --- TABS LAYOUT TERBARU (TAB 6 DITAMBAHKAN UNTUK INSPEKSI TOWER) ---
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Analisa Rentang Waktu", "Matriks Performa Bulanan", "WA Broadcast", "Raw Data & Export", "Validasi Nama PIC", "Inspeksi Tower (Combat)"])
 
 matrix_display = pd.DataFrame()
 df_master = pd.DataFrame()
@@ -1156,7 +1168,91 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
         else:
             note("ok", "Luar biasa! Seluruh nama PIC dari data tarikan tiket sudah cocok 100% dengan nama di file Master.")
 
+    # === TAB 6: INSPEKSI TOWER (COMBAT) ===
+    with tab6:
+        section_title("Tracker Inspeksi & Penguatan Tower (Combat)", "Monitoring khusus kunjungan lapangan untuk pengecekan kemiringan dan fisik tower.")
+        if file_combat is not None:
+            try:
+                # Membaca data site combat
+                xls_c = pd.ExcelFile(file_combat)
+                sheet_to_use = 'Combat NOP Palangkaraya' if 'Combat NOP Palangkaraya' in xls_c.sheet_names else xls_c.sheet_names[0]
+                df_combat_raw = pd.read_excel(file_combat, sheet_name=sheet_to_use)
+                
+                if 'siteid' in df_combat_raw.columns:
+                    # Inisialisasi status kunjungan di session state jika belum ada
+                    if 'combat_tracker' not in st.session_state:
+                        # Membuat kolom tracking tambahan
+                        df_c = df_combat_raw.copy()
+                        df_c['Status Kunjungan'] = 'Belum Dikunjungi'
+                        df_c['Update Foto Fisik'] = False
+                        df_c['Cek Kemiringan (Tilt)'] = False
+                        df_c['PIC Inspeksi'] = ''
+                        df_c['Tanggal Inspeksi'] = pd.NaT
+                        df_c['Keterangan/Saran Perkuatan'] = ''
+                        st.session_state['combat_tracker'] = df_c
+                    
+                    df_combat_display = st.session_state['combat_tracker']
+                    
+                    # Statistik Cepat
+                    total_combat = len(df_combat_display)
+                    visited = len(df_combat_display[df_combat_display['Status Kunjungan'] == 'Sudah Dikunjungi'])
+                    
+                    kpi_strip([
+                        ("Total Site Combat", f"{total_combat}", "Perlu diinspeksi"),
+                        ("Sudah Dikunjungi", f"{visited}", "Telah di-update"),
+                        ("Sisa Target", f"{total_combat - visited}", "Belum diinspeksi"),
+                        ("Progress", f"{(visited/total_combat*100) if total_combat else 0:.1f}%", "Penyelesaian inspeksi")
+                    ])
+                    
+                    note("info", "Tabel di bawah bersifat interaktif. Anda bisa langsung menceklis status foto/kemiringan, memilih PIC, dan mengisi keterangan perkuatan tower.")
+                    
+                    # Data Editor
+                    edited_combat = st.data_editor(
+                        df_combat_display,
+                        column_config={
+                            "No": st.column_config.NumberColumn(disabled=True),
+                            "siteid": st.column_config.TextColumn("Site ID", disabled=True),
+                            "sitename": st.column_config.TextColumn("Nama Site", disabled=True),
+                            "Tower Type": st.column_config.TextColumn(disabled=True),
+                            "Prio": st.column_config.TextColumn(disabled=True),
+                            "Status Kunjungan": st.column_config.SelectboxColumn(
+                                "Status Kunjungan", options=["Belum Dikunjungi", "Dijadwalkan", "Sudah Dikunjungi"]
+                            ),
+                            "Update Foto Fisik": st.column_config.CheckboxColumn("Foto Fisik OK?"),
+                            "Cek Kemiringan (Tilt)": st.column_config.CheckboxColumn("Cek Kemiringan OK?"),
+                            "PIC Inspeksi": st.column_config.SelectboxColumn(
+                                "PIC Inspeksi", options=[""] + sorted(master_pic_df['Nama PIC'].tolist()) if not master_pic_df.empty else [""]
+                            ),
+                            "Tanggal Inspeksi": st.column_config.DateColumn("Tanggal Inspeksi"),
+                            "Keterangan/Saran Perkuatan": st.column_config.TextColumn("Catatan Perkuatan/Kondisi")
+                        },
+                        hide_index=True,
+                        use_container_width=True,
+                        key="combat_editor"
+                    )
+                    
+                    if st.button("Simpan Progress Inspeksi", type="primary"):
+                        st.session_state['combat_tracker'] = edited_combat
+                        st.success("Data inspeksi site combat berhasil disimpan di sesi ini!")
+                        st.rerun()
+                        
+                    # Download hasil inspeksi
+                    csv_combat = st.session_state['combat_tracker'].to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download Data Tracker Inspeksi (CSV)",
+                        data=csv_combat,
+                        file_name=f"Tracker_Inspeksi_Combat_{wib_now.strftime('%Y%m%d')}.csv",
+                        mime="text/csv",
+                        use_container_width=False
+                    )
+                else:
+                    note("warn", "Format file excel Combat tidak sesuai (tidak menemukan kolom 'siteid'). Pastikan file yang diupload benar.")
+            except Exception as e:
+                st.error(f"Gagal membaca file combat: {e}")
+        else:
+            note("info", "Silakan unggah file excel 'Data Site Combat/Tower' di panel sidebar (opsi ke-5) untuk mengaktifkan fitur tracker inspeksi ini.")
+
 else:
-    for t in (tab1, tab2, tab3, tab4, tab5):
+    for t in (tab1, tab2, tab3, tab4, tab5, tab6):
         with t:
             note("info", "<b>Belum ada data untuk ditampilkan.</b> Unggah file sumber pada panel kiri.")
