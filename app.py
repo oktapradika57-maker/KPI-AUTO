@@ -713,8 +713,9 @@ if actual_master_file:
         else:
             master_pic_df['NOP'] = 'Tidak Terdeteksi'
         master_pic_df = master_pic_df[~master_pic_df['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_all))]
-        # GABUNGKAN NOP JIKA 1 PIC PUNYA BANYAK NOP (MENCEGAH NOP LAIN HILANG KARENA DROP DUPLICATES)
-        master_pic_df = master_pic_df.groupby('Nama PIC')['NOP'].apply(lambda x: ' & '.join(sorted(set(x)))).reset_index()
+        # PERBAIKAN: JANGAN DROP DUPLICATES!
+        # Biarkan 1 Nama PIC terdaftar di banyak NOP sehingga otomatis terpisah menjadi 2 baris
+        master_pic_df = master_pic_df.drop_duplicates(subset=['Nama PIC', 'NOP'])
     except Exception as e:
         master_notices.append(("warn", f"Gagal memproses file <b>{esc(file_master_name)}</b>: {esc(e)}"))
 else:
@@ -868,24 +869,23 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
     df_filtered_date = df_raw[(df_raw['Tanggal Utama'] >= start_date) & (df_raw['Tanggal Utama'] <= end_date)]
 
     if not df_filtered_date.empty:
-        breakdown = pd.pivot_table(df_filtered_date, index='Nama PIC', columns='Source', values='Ticket ID', aggfunc='count', fill_value=0).reset_index()
+        # PERBAIKAN: Pivot berdasar Nama PIC dan NOP agar tiket terpisah untuk orang yang punya >1 NOP
+        breakdown = pd.pivot_table(df_filtered_date, index=['Nama PIC', 'NOP'], columns='Source', values='Ticket ID', aggfunc='count', fill_value=0).reset_index()
         breakdown.columns.name = None
     else:
-        breakdown = pd.DataFrame(columns=['Nama PIC'])
+        breakdown = pd.DataFrame(columns=['Nama PIC', 'NOP'])
 
     for col in SOURCE_COLS:
         if col not in breakdown.columns: breakdown[col] = 0
 
-    breakdown = breakdown[['Nama PIC'] + SOURCE_COLS]
+    breakdown = breakdown[['Nama PIC', 'NOP'] + SOURCE_COLS]
 
     if not master_pic_df.empty:
-        breakdown = pd.merge(master_pic_df[['Nama PIC', 'NOP']], breakdown, on='Nama PIC', how='left').fillna(0)
+        # Left join menggunakan KEDUA kolom agar nama yang sama tapi NOP beda tidak tergabung/duplicate lagi
+        breakdown = pd.merge(master_pic_df[['Nama PIC', 'NOP']], breakdown, on=['Nama PIC', 'NOP'], how='left').fillna(0)
     else:
-        all_pics = df_raw['Nama PIC'].unique()
-        missing_pics = set(all_pics) - set(breakdown['Nama PIC'].unique())
-        if missing_pics:
-            df_missing = pd.DataFrame({'Nama PIC': list(missing_pics), 'PMS': 0, 'PMG': 0, 'FNA': 0, 'BPS': 0, 'TS': 0})
-            breakdown = pd.concat([breakdown, df_missing], ignore_index=True)
+        all_pics = df_raw[['Nama PIC', 'NOP']].drop_duplicates()
+        breakdown = pd.merge(all_pics, breakdown, on=['Nama PIC', 'NOP'], how='left').fillna(0)
         if 'NOP' not in breakdown.columns:
             breakdown['NOP'] = 'Tidak Terdeteksi'
 
@@ -924,28 +924,39 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
         if not master_pic_df.empty:
             st.caption("Master mapping aktif & Auto-Validasi Nama PIC bekerja di latar belakang (cek Tab Validasi).")
 
-        section_title(f"Rincian Perolehan Tiket per PIC (Target: {target_days} Hari)")
+        # --- JUDUL & TOMBOL DOWNLOAD EXCEL KHUSUS TABEL SUMMARY ---
+        col_title, col_dl = st.columns([3, 1], gap="small")
+        with col_title:
+            section_title(f"Rincian Perolehan Tiket per PIC (Target: {target_days} Hari)")
+            
         if df_master.empty:
             note("info", "Tidak ada PIC pada kategori yang dipilih.")
         else:
             table_cols = ['Nama PIC', 'NOP'] + SOURCE_COLS + ['Total Tiket', 'Ratio', 'Sisa Target', 'Kategori Produktivitas', 'Remark']
+            df_summary_sorted = df_master.sort_values(['Ratio', 'Total Tiket', 'Nama PIC'])[table_cols]
+            
+            with col_dl:
+                st.markdown("<div style='margin-top: 25px;'></div>", unsafe_allow_html=True)
+                # Buat file Excel di memori untuk tabel summary
+                output_summary = io.BytesIO()
+                with pd.ExcelWriter(output_summary, engine='xlsxwriter') as writer:
+                    df_summary_sorted.to_excel(writer, index=False, sheet_name='Summary_PIC')
+                
+                st.download_button(
+                    label="📥 Download Excel (Tabel Ini)",
+                    data=output_summary.getvalue(),
+                    file_name=f"Rekap_Perhitungan_PIC_{wib_now.strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
             fmt = {c: '{:.0f}' for c in SOURCE_COLS + ['Total Tiket', 'Sisa Target']}
             fmt['Ratio'] = '{:.2f}'
-            tbl = df_master.sort_values(['Ratio', 'Total Tiket', 'Nama PIC'])[table_cols].style.format(fmt)
+            tbl = df_summary_sorted.style.format(fmt)
             tbl = style_cells(tbl, cat_cell_style, subset=['Kategori Produktivitas'])
             tbl = style_cells(tbl, remark_cell_style, subset=['Remark'])
             tbl = style_cells(tbl, ratio_cell_style, subset=['Ratio'])
             show_df(tbl, hide_index=True)
-
-            # Tambahan: Tombol download seluruh tabel rincian langsung di bawah tabel utama
-            csv_all_summary = df_master.sort_values(['Ratio', 'Total Tiket', 'Nama PIC'])[table_cols].to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download Seluruh Tabel Rincian & Perhitungan (CSV)",
-                data=csv_all_summary,
-                file_name=f"Summary_KPI_Seluruh_PIC_{wib_now.strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
 
             # --- FITUR BARU: TOMBOL DOWNLOAD UNTUK SETIAP ROW (PER PIC) ---
             section_title("📥 Export Rincian per PIC (Row-by-Row)", "Unduh hasil perhitungan auto (Ratio, Sisa Target) beserta daftar tiket spesifik untuk masing-masing personel.")
