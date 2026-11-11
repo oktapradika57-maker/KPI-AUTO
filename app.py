@@ -1046,20 +1046,44 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
         df_matrix_raw = df_raw.dropna(subset=['Tanggal Utama']).copy()
         df_matrix_raw['Bulan_Sort'] = df_matrix_raw['Tanggal Utama'].dt.to_period('M')
         df_matrix_raw['DaysInMonth'] = df_matrix_raw['Tanggal Utama'].dt.daysinmonth
-        monthly_tickets = df_matrix_raw.groupby(['Nama PIC', 'Bulan_Sort', 'DaysInMonth']).size().reset_index(name='Tickets')
+        # Group by Nama PIC AND NOP
+        monthly_tickets = df_matrix_raw.groupby(['Nama PIC', 'NOP', 'Bulan_Sort', 'DaysInMonth']).size().reset_index(name='Tickets')
 
         if monthly_tickets.empty:
             note("info", "Belum ada tiket bertanggal pada data.")
         else:
             monthly_tickets['Ratio'] = monthly_tickets['Tickets'] / monthly_tickets['DaysInMonth']
-            matrix_pivot = monthly_tickets.pivot(index='Nama PIC', columns='Bulan_Sort', values='Ratio').fillna(0)
+            
+            # Pivot with MultiIndex
+            matrix_pivot = monthly_tickets.pivot(index=['Nama PIC', 'NOP'], columns='Bulan_Sort', values='Ratio').fillna(0)
             available_months = sorted(matrix_pivot.columns)
 
             if not master_pic_df.empty:
-                missing_matrix = [p for p in master_pic_df['Nama PIC'] if p not in matrix_pivot.index]
-                if missing_matrix:
-                    matrix_pivot = pd.concat([matrix_pivot, pd.DataFrame(0.0, index=missing_matrix, columns=matrix_pivot.columns)])
-            matrix_pivot.index.name = 'Nama PIC'
+                # Add missing combinations from master_pic_df
+                # First, ensure master_pic_df has valid NOPs matching the selected_nops filter
+                if selected_nops:
+                    mask = master_pic_df['NOP'].apply(lambda x: any(n in str(x) for n in selected_nops))
+                    valid_master = master_pic_df[mask]
+                else:
+                    valid_master = master_pic_df
+                    
+                # We need to use grouped NOPs to match df_raw logic
+                valid_grouped = valid_master.groupby('Nama PIC')['NOP'].apply(lambda x: ' & '.join(sorted(set(x)))).reset_index()
+                
+                # Check what is missing
+                current_idx = set(matrix_pivot.index)
+                master_idx = set(zip(valid_grouped['Nama PIC'], valid_grouped['NOP']))
+                missing_idx = list(master_idx - current_idx)
+                
+                if missing_idx:
+                    missing_df = pd.DataFrame(0.0, index=pd.MultiIndex.from_tuples(missing_idx, names=['Nama PIC', 'NOP']), columns=matrix_pivot.columns)
+                    matrix_pivot = pd.concat([matrix_pivot, missing_df])
+            
+            matrix_pivot = matrix_pivot.reset_index()
+            # Rename for display logic below
+            # Tapi karena code di bawah (matrix_display) expect index='Nama PIC', kita buat index komposit
+            matrix_pivot['PIC_Display'] = matrix_pivot['Nama PIC'] + " (" + matrix_pivot['NOP'] + ")"
+            matrix_pivot = matrix_pivot.set_index('PIC_Display')
 
             col_m1, col_m2 = st.columns(2)
             selected_months = col_m1.multiselect("Pilih Bulan", options=available_months,
@@ -1094,13 +1118,20 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
 
     with tab3:
         excluded_from_wa = ['darli', 'indra', 'riko setiadi', 'riki hidayat']
-        broadcast_df = breakdown[~breakdown['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_wa))]
+        
+        if breakdown.empty or 'Nama PIC' not in breakdown.columns:
+            broadcast_df = pd.DataFrame()
+            excluded_count = 0
+        else:
+            broadcast_df = breakdown[~breakdown['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_wa))].copy()
+            excluded_count = len(breakdown) - len(broadcast_df)
+
         render_wa_tab(
             broadcast_all=broadcast_df, has_data=has_data, n_sources=n_sources,
             nops_display=describe_nops(selected_nops, available_nops, 8),
             d_start=d_start, d_end=d_end, target_days=target_days,
             waktu_str=wib_now.strftime("%d %b %Y - %H:%M WIB"),
-            excluded_count=len(breakdown) - len(broadcast_df),
+            excluded_count=excluded_count,
         )
 
     with tab4:
