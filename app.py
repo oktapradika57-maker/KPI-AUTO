@@ -696,15 +696,11 @@ if actual_master_file:
             if 'nama' in str(col).lower() or 'pic' in str(col).lower():
                 name_col = col
                 break
-        nop_col = None
+        nop_col = df_master_pic.columns[1] if len(df_master_pic.columns) > 1 else None
         for col in df_master_pic.columns:
             if 'nop' in str(col).lower():
                 nop_col = col
                 break
-        if not nop_col and len(df_master_pic.columns) > 2:
-            nop_col = df_master_pic.columns[2]
-        elif not nop_col and len(df_master_pic.columns) > 1:
-            nop_col = df_master_pic.columns[1]
         df_master_pic = df_master_pic.dropna(subset=[name_col])
         master_pic_df['Nama PIC'] = df_master_pic[name_col].apply(normalize_name)
         if nop_col is not None:
@@ -717,6 +713,8 @@ if actual_master_file:
         else:
             master_pic_df['NOP'] = 'Tidak Terdeteksi'
         master_pic_df = master_pic_df[~master_pic_df['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_all))]
+        # PERBAIKAN: JANGAN DROP DUPLICATES!
+        # Biarkan 1 Nama PIC terdaftar di banyak NOP sehingga otomatis terpisah menjadi 2 baris
         master_pic_df = master_pic_df.drop_duplicates(subset=['Nama PIC', 'NOP'])
     except Exception as e:
         master_notices.append(("warn", f"Gagal memproses file <b>{esc(file_master_name)}</b>: {esc(e)}"))
@@ -780,14 +778,11 @@ else:
     df_raw['Nama PIC'] = df_raw['Nama PIC'].apply(normalize_name)
     df_raw['Nama Asli Tarikan'] = df_raw['Nama PIC']  # Backup nama asli untuk fitur log
 
-    # === LOGIKA MULTI-NOP YANG BENAR (TIDAK MENGGANDAKAN TIKET) ===
+    # === FITUR TRACKING & VALIDASI NAMA (AUTO-MAP & MANUAL OVERRIDE) ===
     if not master_pic_df.empty:
-        # Kita punya master_pic_df yang TIDAK di-drop duplicates nya.
-        # Jadi 1 nama bisa punya >1 NOP (misal Hermansyah -> NOP Pangkalan Bun & NOP Pontianak)
-        
-        # 1. Cek apakah ada Nama PIC di raw data yang tidak ada di master (untuk fitur Validasi Manual)
-        valid_master_names = master_pic_df['Nama PIC'].unique().tolist()
+        valid_master_names = master_pic_df['Nama PIC'].tolist()
         raw_names_unique = df_raw['Nama PIC'].unique()
+        
         unmatched_names = [n for n in raw_names_unique if n not in valid_master_names]
         
         if 'name_overrides' not in st.session_state:
@@ -826,11 +821,7 @@ else:
         if apply_map:
             df_raw['Nama PIC'] = df_raw['Nama PIC'].replace(apply_map)
 
-        # 2. Gabungkan NOP di Master Data agar 1 PIC = 1 Baris (Pangkalan Bun & Pontianak)
-        # INI PENTING AGAR MERGE KE DF_RAW TIDAK MENGGANDAKAN JUMLAH TIKET
-        master_pic_grouped = master_pic_df.groupby('Nama PIC')['NOP'].apply(lambda x: ' & '.join(sorted(set(x)))).reset_index()
-        
-        df_raw = pd.merge(df_raw, master_pic_grouped[['Nama PIC', 'NOP']], on='Nama PIC', how='inner')
+        df_raw = pd.merge(df_raw, master_pic_df[['Nama PIC', 'NOP']], on='Nama PIC', how='inner')
     else:
         df_raw['NOP'] = 'Tidak Terdeteksi'
 
@@ -839,16 +830,20 @@ available_nops = []
 if not master_pic_df.empty:
     with st.sidebar:
         render('<div class="sb-title">Filter Area (NOP)</div>')
+        # Ekstrak NOP individual untuk pilihan di filter
         all_nops = set()
-        for nop_str in master_pic_df['NOP'].dropna():
-            all_nops.add(nop_str.strip())
+        for nop_str in master_pic_df['NOP']:
+            for n in nop_str.split(' & '):
+                all_nops.add(n.strip())
         available_nops = sorted(list(all_nops))
         
         selected_nops = st.multiselect("Pilih NOP yang ingin ditampilkan", options=available_nops, default=available_nops)
         if selected_nops:
-            # Filter Raw Data based on string containment
-            # Jadi kalau df_raw punya NOP "NOP Pangkalan Bun & NOP Pontianak", dan user pilih "NOP Pangkalan Bun", tiketnya TAMPIL
-            mask_raw = df_raw['NOP'].apply(lambda x: any(n in str(x) for n in selected_nops))
+            # Gunakan regex atau pengecekan string untuk memfilter NOP gabungan
+            mask_master = master_pic_df['NOP'].apply(lambda x: any(n in x for n in selected_nops))
+            master_pic_df = master_pic_df[mask_master]
+            
+            mask_raw = df_raw['NOP'].apply(lambda x: any(n in x for n in selected_nops))
             df_raw = df_raw[mask_raw]
         render('<div class="sb-title">Filter Kategori</div>')
         kategori_options = ["Good", "Poor", "Very Poor", "Zero"]
@@ -874,24 +869,23 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
     df_filtered_date = df_raw[(df_raw['Tanggal Utama'] >= start_date) & (df_raw['Tanggal Utama'] <= end_date)]
 
     if not df_filtered_date.empty:
-        breakdown = pd.pivot_table(df_filtered_date, index='Nama PIC', columns='Source', values='Ticket ID', aggfunc='count', fill_value=0).reset_index()
+        # PERBAIKAN: Pivot berdasar Nama PIC dan NOP agar tiket terpisah untuk orang yang punya >1 NOP
+        breakdown = pd.pivot_table(df_filtered_date, index=['Nama PIC', 'NOP'], columns='Source', values='Ticket ID', aggfunc='count', fill_value=0).reset_index()
         breakdown.columns.name = None
     else:
-        breakdown = pd.DataFrame(columns=['Nama PIC'])
+        breakdown = pd.DataFrame(columns=['Nama PIC', 'NOP'])
 
     for col in SOURCE_COLS:
         if col not in breakdown.columns: breakdown[col] = 0
 
-    breakdown = breakdown[['Nama PIC'] + SOURCE_COLS]
+    breakdown = breakdown[['Nama PIC', 'NOP'] + SOURCE_COLS]
 
     if not master_pic_df.empty:
-        # PENTING: Gunakan master_pic_grouped yang berisi NOP gabungan (misal NOP Pangkalan Bun & NOP Pontianak)
-        # Jadi 1 orang tidak ganda di tabel summary, namun label NOP-nya mencerminkan seluruh area dia
-        master_pic_grouped = master_pic_df.groupby('Nama PIC')['NOP'].apply(lambda x: ' & '.join(sorted(set(x)))).reset_index()
-        breakdown = pd.merge(master_pic_grouped[['Nama PIC', 'NOP']], breakdown, on='Nama PIC', how='left').fillna(0)
+        # Left join menggunakan KEDUA kolom agar nama yang sama tapi NOP beda tidak tergabung/duplicate lagi
+        breakdown = pd.merge(master_pic_df[['Nama PIC', 'NOP']], breakdown, on=['Nama PIC', 'NOP'], how='left').fillna(0)
     else:
-        all_pics = df_raw[['Nama PIC', 'NOP']].drop_duplicates(subset=['Nama PIC'])
-        breakdown = pd.merge(all_pics, breakdown, on='Nama PIC', how='left').fillna(0)
+        all_pics = df_raw[['Nama PIC', 'NOP']].drop_duplicates()
+        breakdown = pd.merge(all_pics, breakdown, on=['Nama PIC', 'NOP'], how='left').fillna(0)
         if 'NOP' not in breakdown.columns:
             breakdown['NOP'] = 'Tidak Terdeteksi'
 
@@ -986,7 +980,7 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
                     
                     # Menggabungkan Perhitungan Auto dan Raw Data Tiket
                     pic_summary = row[table_cols].to_frame().T
-                    pic_raw = df_raw[(df_raw['Nama PIC'] == row['Nama PIC']) & (df_raw['NOP'] == row['NOP'])]
+                    pic_raw = df_raw[df_raw['Nama PIC'] == row['Nama PIC']]
                     
                     csv_text = "--- PERHITUNGAN AUTO KPI ---\n"
                     csv_text += pic_summary.to_csv(index=False)
@@ -1046,44 +1040,20 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
         df_matrix_raw = df_raw.dropna(subset=['Tanggal Utama']).copy()
         df_matrix_raw['Bulan_Sort'] = df_matrix_raw['Tanggal Utama'].dt.to_period('M')
         df_matrix_raw['DaysInMonth'] = df_matrix_raw['Tanggal Utama'].dt.daysinmonth
-        # Group by Nama PIC AND NOP
-        monthly_tickets = df_matrix_raw.groupby(['Nama PIC', 'NOP', 'Bulan_Sort', 'DaysInMonth']).size().reset_index(name='Tickets')
+        monthly_tickets = df_matrix_raw.groupby(['Nama PIC', 'Bulan_Sort', 'DaysInMonth']).size().reset_index(name='Tickets')
 
         if monthly_tickets.empty:
             note("info", "Belum ada tiket bertanggal pada data.")
         else:
             monthly_tickets['Ratio'] = monthly_tickets['Tickets'] / monthly_tickets['DaysInMonth']
-            
-            # Pivot with MultiIndex
-            matrix_pivot = monthly_tickets.pivot(index=['Nama PIC', 'NOP'], columns='Bulan_Sort', values='Ratio').fillna(0)
+            matrix_pivot = monthly_tickets.pivot(index='Nama PIC', columns='Bulan_Sort', values='Ratio').fillna(0)
             available_months = sorted(matrix_pivot.columns)
 
             if not master_pic_df.empty:
-                # Add missing combinations from master_pic_df
-                # First, ensure master_pic_df has valid NOPs matching the selected_nops filter
-                if selected_nops:
-                    mask = master_pic_df['NOP'].apply(lambda x: any(n in str(x) for n in selected_nops))
-                    valid_master = master_pic_df[mask]
-                else:
-                    valid_master = master_pic_df
-                    
-                # We need to use grouped NOPs to match df_raw logic
-                valid_grouped = valid_master.groupby('Nama PIC')['NOP'].apply(lambda x: ' & '.join(sorted(set(x)))).reset_index()
-                
-                # Check what is missing
-                current_idx = set(matrix_pivot.index)
-                master_idx = set(zip(valid_grouped['Nama PIC'], valid_grouped['NOP']))
-                missing_idx = list(master_idx - current_idx)
-                
-                if missing_idx:
-                    missing_df = pd.DataFrame(0.0, index=pd.MultiIndex.from_tuples(missing_idx, names=['Nama PIC', 'NOP']), columns=matrix_pivot.columns)
-                    matrix_pivot = pd.concat([matrix_pivot, missing_df])
-            
-            matrix_pivot = matrix_pivot.reset_index()
-            # Rename for display logic below
-            # Tapi karena code di bawah (matrix_display) expect index='Nama PIC', kita buat index komposit
-            matrix_pivot['PIC_Display'] = matrix_pivot['Nama PIC'] + " (" + matrix_pivot['NOP'] + ")"
-            matrix_pivot = matrix_pivot.set_index('PIC_Display')
+                missing_matrix = [p for p in master_pic_df['Nama PIC'] if p not in matrix_pivot.index]
+                if missing_matrix:
+                    matrix_pivot = pd.concat([matrix_pivot, pd.DataFrame(0.0, index=missing_matrix, columns=matrix_pivot.columns)])
+            matrix_pivot.index.name = 'Nama PIC'
 
             col_m1, col_m2 = st.columns(2)
             selected_months = col_m1.multiselect("Pilih Bulan", options=available_months,
@@ -1118,20 +1088,13 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
 
     with tab3:
         excluded_from_wa = ['darli', 'indra', 'riko setiadi', 'riki hidayat']
-        
-        if breakdown.empty or 'Nama PIC' not in breakdown.columns:
-            broadcast_df = pd.DataFrame()
-            excluded_count = 0
-        else:
-            broadcast_df = breakdown[~breakdown['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_wa))].copy()
-            excluded_count = len(breakdown) - len(broadcast_df)
-
+        broadcast_df = breakdown[~breakdown['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_wa))]
         render_wa_tab(
             broadcast_all=broadcast_df, has_data=has_data, n_sources=n_sources,
             nops_display=describe_nops(selected_nops, available_nops, 8),
             d_start=d_start, d_end=d_end, target_days=target_days,
             waktu_str=wib_now.strftime("%d %b %Y - %H:%M WIB"),
-            excluded_count=excluded_count,
+            excluded_count=len(breakdown) - len(broadcast_df),
         )
 
     with tab4:
