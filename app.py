@@ -696,11 +696,15 @@ if actual_master_file:
             if 'nama' in str(col).lower() or 'pic' in str(col).lower():
                 name_col = col
                 break
-        nop_col = df_master_pic.columns[1] if len(df_master_pic.columns) > 1 else None
+        nop_col = None
         for col in df_master_pic.columns:
             if 'nop' in str(col).lower():
                 nop_col = col
                 break
+        if not nop_col and len(df_master_pic.columns) > 2:
+            nop_col = df_master_pic.columns[2]
+        elif not nop_col and len(df_master_pic.columns) > 1:
+            nop_col = df_master_pic.columns[1]
         df_master_pic = df_master_pic.dropna(subset=[name_col])
         master_pic_df['Nama PIC'] = df_master_pic[name_col].apply(normalize_name)
         if nop_col is not None:
@@ -713,10 +717,7 @@ if actual_master_file:
         else:
             master_pic_df['NOP'] = 'Tidak Terdeteksi'
         master_pic_df = master_pic_df[~master_pic_df['Nama PIC'].str.lower().apply(lambda x: any(ex in x for ex in excluded_from_all))]
-        # PERBAIKAN MULTI-NOP: Jangan drop duplicate jika beda NOP!
-        master_pic_df = master_pic_df.drop_duplicates(subset=['Nama PIC', 'NOP']).reset_index(drop=True)
-        # Buat ID Unik dengan menggabungkan Nama dan NOP agar 1-to-1 mapping
-        master_pic_df['PIC_ID'] = master_pic_df['Nama PIC'] + ' - ' + master_pic_df['NOP']
+        master_pic_df = master_pic_df.drop_duplicates(subset=['Nama PIC', 'NOP'])
     except Exception as e:
         master_notices.append(("warn", f"Gagal memproses file <b>{esc(file_master_name)}</b>: {esc(e)}"))
 else:
@@ -779,101 +780,75 @@ else:
     df_raw['Nama PIC'] = df_raw['Nama PIC'].apply(normalize_name)
     df_raw['Nama Asli Tarikan'] = df_raw['Nama PIC']  # Backup nama asli untuk fitur log
 
-    # === FITUR TRACKING & VALIDASI NAMA (AUTO-MAP & MANUAL OVERRIDE) - VERSI PIC_ID 1-TO-1 ===
+    # === LOGIKA MULTI-NOP YANG BENAR (TIDAK MENGGANDAKAN TIKET) ===
     if not master_pic_df.empty:
-        raw_names_unique = df_raw['Nama PIC'].unique()
+        # Kita punya master_pic_df yang TIDAK di-drop duplicates nya.
+        # Jadi 1 nama bisa punya >1 NOP (misal Hermansyah -> NOP Pangkalan Bun & NOP Pontianak)
         
-        if 'name_overrides_v3' not in st.session_state:
-            st.session_state['name_overrides_v3'] = {}
+        # 1. Cek apakah ada Nama PIC di raw data yang tidak ada di master (untuk fitur Validasi Manual)
+        valid_master_names = master_pic_df['Nama PIC'].unique().tolist()
+        raw_names_unique = df_raw['Nama PIC'].unique()
+        unmatched_names = [n for n in raw_names_unique if n not in valid_master_names]
+        
+        if 'name_overrides' not in st.session_state:
+            st.session_state['name_overrides'] = {}
             
         mapping_data = []
-        for un in raw_names_unique:
-            if un in st.session_state['name_overrides_v3']:
-                mapped = st.session_state['name_overrides_v3'][un]
+        for un in unmatched_names:
+            if un in st.session_state['name_overrides']:
+                mapped = st.session_state['name_overrides'][un]
                 status = "Manual Edit"
             else:
-                # 1. Exact Match Name
-                exact_matches = master_pic_df[master_pic_df['Nama PIC'].str.lower() == un.lower()]
-                if len(exact_matches) == 1:
-                    mapped = exact_matches.iloc[0]['PIC_ID']
-                    status = "Auto-Mapped (Exact)"
-                elif len(exact_matches) > 1:
-                    mapped = None
-                    status = "Multi-NOP (Pilih Manual)"
-                else:
-                    # 2. Fuzzy Match
-                    master_names_only = master_pic_df['Nama PIC'].unique()
-                    matches = difflib.get_close_matches(un, master_names_only, n=1, cutoff=0.7)
-                    if matches:
-                        matched_name = matches[0]
-                        potentials = master_pic_df[master_pic_df['Nama PIC'] == matched_name]
-                        if len(potentials) == 1:
-                            mapped = potentials.iloc[0]['PIC_ID']
-                            status = "Auto-Mapped (Fuzzy)"
-                        else:
-                            mapped = None
-                            status = "Multi-NOP Fuzzy (Pilih Manual)"
-                    else:
-                        # 3. First Word Match
-                        un_first = str(un).split()[0].lower()
-                        def get_first_word(x):
-                            return str(x).split()[0].lower() if pd.notna(x) else ""
-                        
-                        master_first_words = master_pic_df['Nama PIC'].apply(get_first_word)
-                        potentials = master_pic_df[master_first_words == un_first]
-                        if len(potentials) == 1:
-                            mapped = potentials.iloc[0]['PIC_ID']
-                            status = "Auto-Mapped (First Word)"
-                        elif len(potentials) > 1:
-                            mapped = None
-                            status = "Multi-NOP Word (Pilih Manual)"
-                        else:
-                            mapped = None
-                            status = "Unmapped"
-                            
+                matches = difflib.get_close_matches(un, valid_master_names, n=1, cutoff=0.7)
+                mapped = matches[0] if matches else None
+                if not mapped:
+                    un_first = un.split()[0].lower()
+                    for vmn in valid_master_names:
+                        if vmn.split()[0].lower() == un_first:
+                            mapped = vmn
+                            break
+                status = "Auto-Mapped" if mapped else "Unmapped"
+            
             mapping_data.append({
                 "Nama Tarikan (Asli)": un,
-                "Nama di Master Data (Beserta NOP)": mapped if mapped else None,
+                "Nama di Master Data": mapped if mapped else None,
                 "Status": status
             })
             
         st.session_state['mapping_df'] = pd.DataFrame(mapping_data)
         
         apply_map = {}
-        for row in mapping_data:
-            if row['Nama di Master Data (Beserta NOP)']:
-                apply_map[row['Nama Tarikan (Asli)']] = row['Nama di Master Data (Beserta NOP)']
-                
-        df_raw['PIC_ID'] = df_raw['Nama PIC'].map(apply_map)
+        if mapping_data:
+            for row in mapping_data:
+                if row['Nama di Master Data']:
+                    apply_map[row['Nama Tarikan (Asli)']] = row['Nama di Master Data']
+                    
+        if apply_map:
+            df_raw['Nama PIC'] = df_raw['Nama PIC'].replace(apply_map)
+
+        # 2. Gabungkan NOP di Master Data agar 1 PIC = 1 Baris (Pangkalan Bun & Pontianak)
+        # INI PENTING AGAR MERGE KE DF_RAW TIDAK MENGGANDAKAN JUMLAH TIKET
+        master_pic_grouped = master_pic_df.groupby('Nama PIC')['NOP'].apply(lambda x: ' & '.join(sorted(set(x)))).reset_index()
         
-        # Hapus KoloM Nama PIC lama dari df_raw agar digantikan yang dari master 100%
-        df_raw = df_raw.drop(columns=['Nama PIC'], errors='ignore')
-        
-        # Merge dengan master by PIC_ID untuk menghindari Cartesian product (Duplikasi Tiket)
-        df_raw = pd.merge(df_raw.dropna(subset=['PIC_ID']), master_pic_df[['PIC_ID', 'Nama PIC', 'NOP']], on='PIC_ID', how='inner')
+        df_raw = pd.merge(df_raw, master_pic_grouped[['Nama PIC', 'NOP']], on='Nama PIC', how='inner')
     else:
         df_raw['NOP'] = 'Tidak Terdeteksi'
-        df_raw['PIC_ID'] = df_raw['Nama PIC']
 
 selected_nops = []
 available_nops = []
 if not master_pic_df.empty:
     with st.sidebar:
         render('<div class="sb-title">Filter Area (NOP)</div>')
-        # Ekstrak NOP individual untuk pilihan di filter
         all_nops = set()
-        for nop_str in master_pic_df['NOP']:
-            for n in nop_str.split(' & '):
-                all_nops.add(n.strip())
+        for nop_str in master_pic_df['NOP'].dropna():
+            all_nops.add(nop_str.strip())
         available_nops = sorted(list(all_nops))
         
         selected_nops = st.multiselect("Pilih NOP yang ingin ditampilkan", options=available_nops, default=available_nops)
         if selected_nops:
-            # Gunakan regex atau pengecekan string untuk memfilter NOP gabungan
-            mask_master = master_pic_df['NOP'].apply(lambda x: any(n in x for n in selected_nops))
-            master_pic_df = master_pic_df[mask_master]
-            
-            mask_raw = df_raw['NOP'].apply(lambda x: any(n in x for n in selected_nops))
+            # Filter Raw Data based on string containment
+            # Jadi kalau df_raw punya NOP "NOP Pangkalan Bun & NOP Pontianak", dan user pilih "NOP Pangkalan Bun", tiketnya TAMPIL
+            mask_raw = df_raw['NOP'].apply(lambda x: any(n in str(x) for n in selected_nops))
             df_raw = df_raw[mask_raw]
         render('<div class="sb-title">Filter Kategori</div>')
         kategori_options = ["Good", "Poor", "Very Poor", "Zero"]
@@ -899,22 +874,24 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
     df_filtered_date = df_raw[(df_raw['Tanggal Utama'] >= start_date) & (df_raw['Tanggal Utama'] <= end_date)]
 
     if not df_filtered_date.empty:
-        breakdown = pd.pivot_table(df_filtered_date, index=['Nama PIC', 'NOP'], columns='Source', values='Ticket ID', aggfunc='count', fill_value=0).reset_index()
+        breakdown = pd.pivot_table(df_filtered_date, index='Nama PIC', columns='Source', values='Ticket ID', aggfunc='count', fill_value=0).reset_index()
         breakdown.columns.name = None
     else:
-        breakdown = pd.DataFrame(columns=['Nama PIC', 'NOP'])
+        breakdown = pd.DataFrame(columns=['Nama PIC'])
 
     for col in SOURCE_COLS:
         if col not in breakdown.columns: breakdown[col] = 0
 
-    breakdown = breakdown[['Nama PIC', 'NOP'] + SOURCE_COLS]
+    breakdown = breakdown[['Nama PIC'] + SOURCE_COLS]
 
     if not master_pic_df.empty:
-        # Left join on both Nama PIC and NOP to keep multi-NOP personnel separated cleanly!
-        breakdown = pd.merge(master_pic_df[['Nama PIC', 'NOP']], breakdown, on=['Nama PIC', 'NOP'], how='left').fillna(0)
+        # PENTING: Gunakan master_pic_grouped yang berisi NOP gabungan (misal NOP Pangkalan Bun & NOP Pontianak)
+        # Jadi 1 orang tidak ganda di tabel summary, namun label NOP-nya mencerminkan seluruh area dia
+        master_pic_grouped = master_pic_df.groupby('Nama PIC')['NOP'].apply(lambda x: ' & '.join(sorted(set(x)))).reset_index()
+        breakdown = pd.merge(master_pic_grouped[['Nama PIC', 'NOP']], breakdown, on='Nama PIC', how='left').fillna(0)
     else:
-        all_pics = df_raw[['Nama PIC', 'NOP']].drop_duplicates()
-        breakdown = pd.merge(all_pics, breakdown, on=['Nama PIC', 'NOP'], how='left').fillna(0)
+        all_pics = df_raw[['Nama PIC', 'NOP']].drop_duplicates(subset=['Nama PIC'])
+        breakdown = pd.merge(all_pics, breakdown, on='Nama PIC', how='left').fillna(0)
         if 'NOP' not in breakdown.columns:
             breakdown['NOP'] = 'Tidak Terdeteksi'
 
@@ -1164,21 +1141,18 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
     with tab5:
         section_title("Tracking & Validasi Nama PIC", "Sesuaikan jika terdapat nama ditarikan tiket yang sedikit berbeda dengan Master Data.")
         if 'mapping_df' in st.session_state and not st.session_state['mapping_df'].empty:
-            unmapped_count = len(st.session_state['mapping_df'][st.session_state['mapping_df']['Nama di Master Data (Beserta NOP)'].isna()])
-            if unmapped_count > 0:
-                note("crit", f"⚠️ <b>Ada {unmapped_count} Nama Tarikan yang Multi-NOP atau belum ter-mapping!</b> Tiket mereka tidak akan masuk dashboard sebelum Anda memilihkan NOP yang tepat di bawah.")
-            else:
-                note("info", "Sistem telah memetakan seluruh nama tarikan. Anda bisa mengedit kolom <b>Nama di Master Data (Beserta NOP)</b> secara manual di tabel bawah jika hasil otomatis kurang tepat.")
+            note("warn", "Ditemukan nama pada tiket yang tidak sama persis dengan Master Data. Sistem telah mencoba mencocokkan otomatis (Auto-Mapped). "
+                         "Anda dapat mengedit kolom <b>Nama di Master Data</b> secara manual di tabel bawah jika hasil otomatis kurang tepat.")
             
-            master_choices = [""] + sorted(master_pic_df['PIC_ID'].unique().tolist())
+            master_choices = [""] + sorted(master_pic_df['Nama PIC'].unique().tolist())
             
             edited_df = st.data_editor(
                 st.session_state['mapping_df'],
                 column_config={
                     "Nama Tarikan (Asli)": st.column_config.TextColumn("Nama Tarikan (Asli)", disabled=True),
-                    "Nama di Master Data (Beserta NOP)": st.column_config.SelectboxColumn(
-                        "Nama di Master Data (Beserta NOP)",
-                        help="Pilih identitas dan NOP yang benar",
+                    "Nama di Master Data": st.column_config.SelectboxColumn(
+                        "Nama di Master Data",
+                        help="Pilih nama yang benar sesuai list master",
                         options=master_choices,
                         required=False
                     ),
@@ -1193,14 +1167,14 @@ if not df_raw.empty or (not master_pic_df.empty and selected_nops):
                 has_changes = False
                 for idx, row in edited_df.iterrows():
                     orig = row['Nama Tarikan (Asli)']
-                    new_val = row['Nama di Master Data (Beserta NOP)']
+                    new_val = row['Nama di Master Data']
                     if pd.notna(new_val) and str(new_val).strip() != "":
-                        if orig not in st.session_state['name_overrides_v3'] or st.session_state['name_overrides_v3'].get(orig) != new_val:
-                            st.session_state['name_overrides_v3'][orig] = new_val
+                        if orig not in st.session_state['name_overrides'] or st.session_state['name_overrides'].get(orig) != new_val:
+                            st.session_state['name_overrides'][orig] = new_val
                             has_changes = True
                     else:
-                        if orig in st.session_state['name_overrides_v3']:
-                            del st.session_state['name_overrides_v3'][orig]
+                        if orig in st.session_state['name_overrides']:
+                            del st.session_state['name_overrides'][orig]
                             has_changes = True
                             
                 if has_changes:
